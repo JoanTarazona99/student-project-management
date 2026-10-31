@@ -3,19 +3,48 @@ import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, field_validator, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, SecretStr, StrictBool,
+    field_validator, model_validator,
+)
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.auth import UserPublic, require_permission
+from app.admin_lock import (
+    acquire_admin_mutation_lock,
+    require_current_actor,
+)
 from app.database import engine
 from app.projects import audit
 from app.security import hash_password
 
 router = APIRouter(prefix="/admin", tags=["Пользователи и роли"])
 MAX_USER_ID = 9_223_372_036_854_775_807
-ADMIN_LOCK_NAMESPACE = 5_463_984
-ADMIN_LOCK_KEY = 1
+APPLICATION_ROLE_CODES = frozenset({
+    "student", "supervisor", "teacher", "department", "admin",
+})
+ROLE_PERMISSION_CEILING = {
+    "student": frozenset({
+        "projects.create", "projects.read", "plans.propose",
+        "materials.upload", "statuses.read",
+    }),
+    "supervisor": frozenset({
+        "projects.read", "plans.propose", "plans.approve",
+        "reviews.write", "statuses.read",
+    }),
+    "teacher": frozenset({
+        "topics.manage", "projects.create", "projects.read",
+        "supervisors.assign", "plans.propose", "plans.approve",
+        "reviews.write", "statuses.read", "reports.read",
+    }),
+    "department": frozenset({
+        "topics.manage", "projects.read", "supervisors.assign",
+        "statuses.read", "reports.read",
+    }),
+    "admin": frozenset({"users.manage", "roles.manage"}),
+}
+ADMIN_REQUIRED_PERMISSIONS = ROLE_PERMISSION_CEILING["admin"]
 
 
 def normalize_email_value(value):
@@ -110,6 +139,131 @@ class RoleSummary(BaseModel):
     name: str
 
 
+class PermissionSummary(BaseModel):
+    code: str
+    name: str
+
+
+class RolePermissionsSummary(BaseModel):
+    role_code: str
+    permission_codes: list[str]
+
+
+class UserRolesSummary(BaseModel):
+    user_id: int
+    role_codes: list[str]
+
+
+def normalize_codes(values):
+    normalized = [value.strip() for value in values]
+    if any(not value for value in normalized):
+        raise ValueError("Коды не должны быть пустыми.")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("Повторяющиеся коды запрещены.")
+    return normalized
+
+
+class RoleCodesReplace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role_codes: list[str] = Field(min_length=1, max_length=5)
+
+    @field_validator("role_codes")
+    @classmethod
+    def normalize_role_codes(cls, values):
+        return normalize_codes(values)
+
+
+class PermissionCodesReplace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    permission_codes: list[str] = Field(max_length=12)
+
+    @field_validator("permission_codes")
+    @classmethod
+    def normalize_permission_codes(cls, values):
+        return normalize_codes(values)
+
+
+def require_role_administrator(
+    actor: Annotated[UserPublic, Depends(require_permission("roles.manage"))],
+):
+    if "admin" not in actor.roles:
+        raise HTTPException(403, "Требуется активная учетная запись администратора.")
+    return actor
+
+
+def require_admin_inside_transaction(connection, actor_id):
+    return require_current_actor(
+        connection, actor_id, {"roles.manage"}, require_admin=True
+    )
+
+
+def read_application_role(connection, role_code, lock=False):
+    role_code = role_code.strip()
+    if not role_code or role_code not in APPLICATION_ROLE_CODES:
+        raise HTTPException(404, "Роль не найдена.")
+    query = "SELECT id, code FROM public.roles WHERE code = :code"
+    if lock:
+        query += " FOR UPDATE"
+    role = connection.execute(
+        text(query), {"code": role_code}
+    ).mappings().one_or_none()
+    if role is None:
+        raise HTTPException(404, "Роль не найдена.")
+    return role
+
+
+def read_permission_codes(connection, role_id):
+    return connection.execute(text("""
+        SELECT p.code
+        FROM public.role_permissions rp
+        JOIN public.permissions p ON p.id = rp.permission_id
+        WHERE rp.role_id = :role_id
+        ORDER BY p.code
+    """), {"role_id": role_id}).scalars().all()
+
+
+def validate_permission_codes(connection, permission_codes):
+    if not permission_codes:
+        return {}
+    rows = connection.execute(text("""
+        SELECT id, code FROM public.permissions WHERE code = ANY(:codes)
+    """), {"codes": permission_codes}).mappings().all()
+    permission_ids = {row["code"]: row["id"] for row in rows}
+    if set(permission_ids) != set(permission_codes):
+        raise HTTPException(422, "Указан неизвестный код разрешения.")
+    return permission_ids
+
+
+def active_admin_count(connection):
+    return connection.execute(text("""
+        SELECT COUNT(DISTINCT u.id)
+        FROM public.users u
+        JOIN public.user_roles ur ON ur.user_id = u.id
+        JOIN public.roles r ON r.id = ur.role_id
+        WHERE u.is_active AND r.code = 'admin'
+    """)).scalar_one()
+
+
+def validate_project_role_removal(connection, user_id, removed_roles):
+    project_columns = {
+        "student": "student_id",
+        "teacher": "teacher_id",
+        "supervisor": "supervisor_id",
+    }
+    for role_code in sorted(removed_roles & project_columns.keys()):
+        column = project_columns[role_code]
+        assigned = connection.execute(text(
+            f"SELECT EXISTS (SELECT 1 FROM public.projects WHERE {column} = :user_id)"
+        ), {"user_id": user_id}).scalar_one()
+        if assigned:
+            raise HTTPException(
+                409,
+                f"Нельзя снять роль {role_code}: пользователь назначен в существующем проекте.",
+            )
+
+
 USER_SELECT = """
     SELECT u.id, u.email, u.first_name, u.last_name,
            u.middle_name, u.study_group, u.is_active,
@@ -147,6 +301,198 @@ def list_roles(
         raise HTTPException(503, "База данных временно недоступна.") from None
 
 
+@router.get("/permissions", response_model=list[PermissionSummary])
+def list_permissions(
+    actor: Annotated[UserPublic, Depends(require_role_administrator)],
+):
+    try:
+        with engine.connect() as connection:
+            require_admin_inside_transaction(connection, actor.id)
+            rows = connection.execute(text("""
+                SELECT code, name FROM public.permissions ORDER BY code
+            """)).mappings().all()
+            return [PermissionSummary(**dict(row)) for row in rows]
+    except SQLAlchemyError:
+        raise HTTPException(503, "База данных временно недоступна.") from None
+
+
+@router.get(
+    "/roles/{role_code}/permissions",
+    response_model=RolePermissionsSummary,
+)
+def get_role_permissions(
+    role_code: str,
+    actor: Annotated[UserPublic, Depends(require_role_administrator)],
+):
+    try:
+        with engine.connect() as connection:
+            require_admin_inside_transaction(connection, actor.id)
+            role = read_application_role(connection, role_code)
+            return RolePermissionsSummary(
+                role_code=role["code"],
+                permission_codes=read_permission_codes(connection, role["id"]),
+            )
+    except SQLAlchemyError:
+        raise HTTPException(503, "База данных временно недоступна.") from None
+
+
+@router.put(
+    "/roles/{role_code}/permissions",
+    response_model=RolePermissionsSummary,
+)
+def replace_role_permissions(
+    role_code: str,
+    data: PermissionCodesReplace,
+    actor: Annotated[UserPublic, Depends(require_role_administrator)],
+):
+    try:
+        with engine.begin() as connection:
+            acquire_admin_mutation_lock(connection)
+            require_admin_inside_transaction(connection, actor.id)
+            role = read_application_role(connection, role_code, lock=True)
+            new_codes = set(data.permission_codes)
+            permission_ids = validate_permission_codes(connection, data.permission_codes)
+            ceiling = ROLE_PERMISSION_CEILING[role["code"]]
+            if not new_codes.issubset(ceiling):
+                raise HTTPException(
+                    422, "Разрешения выходят за пределы политики выбранной роли."
+                )
+            if (
+                role["code"] == "admin"
+                and not ADMIN_REQUIRED_PERMISSIONS.issubset(new_codes)
+            ):
+                raise HTTPException(
+                    409, "Роль admin должна сохранять users.manage и roles.manage."
+                )
+
+            old_codes = read_permission_codes(connection, role["id"])
+            if set(old_codes) != new_codes:
+                connection.execute(text("""
+                    DELETE FROM public.role_permissions WHERE role_id = :role_id
+                """), {"role_id": role["id"]})
+                if data.permission_codes:
+                    connection.execute(text("""
+                        INSERT INTO public.role_permissions (role_id, permission_id)
+                        VALUES (:role_id, :permission_id)
+                    """), [
+                        {"role_id": role["id"], "permission_id": permission_ids[code]}
+                        for code in sorted(new_codes)
+                    ])
+                audit(connection, actor.id, "role_permissions_replaced",
+                      "role_permissions", role["id"], {
+                          "before": old_codes,
+                          "after": sorted(new_codes),
+                          "added": sorted(new_codes - set(old_codes)),
+                          "removed": sorted(set(old_codes) - new_codes),
+                      })
+            return RolePermissionsSummary(
+                role_code=role["code"],
+                permission_codes=sorted(new_codes),
+            )
+    except IntegrityError:
+        raise HTTPException(409, "Конфликт целостности при изменении разрешений.") from None
+    except SQLAlchemyError:
+        raise HTTPException(503, "База данных временно недоступна.") from None
+
+
+@router.get("/users/{user_id}/roles", response_model=UserRolesSummary)
+def get_user_roles(
+    user_id: Annotated[int, Path(ge=1, le=MAX_USER_ID)],
+    actor: Annotated[UserPublic, Depends(require_role_administrator)],
+):
+    try:
+        with engine.connect() as connection:
+            require_admin_inside_transaction(connection, actor.id)
+            exists = connection.execute(text("""
+                SELECT EXISTS (SELECT 1 FROM public.users WHERE id = :user_id)
+            """), {"user_id": user_id}).scalar_one()
+            if not exists:
+                raise HTTPException(404, "Пользователь не найден.")
+            role_codes = connection.execute(text("""
+                SELECT r.code
+                FROM public.user_roles ur
+                JOIN public.roles r ON r.id = ur.role_id
+                WHERE ur.user_id = :user_id ORDER BY r.code
+            """), {"user_id": user_id}).scalars().all()
+            return UserRolesSummary(user_id=user_id, role_codes=role_codes)
+    except SQLAlchemyError:
+        raise HTTPException(503, "База данных временно недоступна.") from None
+
+
+@router.put("/users/{user_id}/roles", response_model=UserRolesSummary)
+def replace_user_roles(
+    user_id: Annotated[int, Path(ge=1, le=MAX_USER_ID)],
+    data: RoleCodesReplace,
+    actor: Annotated[UserPublic, Depends(require_role_administrator)],
+):
+    try:
+        with engine.begin() as connection:
+            acquire_admin_mutation_lock(connection)
+            require_admin_inside_transaction(connection, actor.id)
+            target = connection.execute(text("""
+                SELECT id, is_active FROM public.users
+                WHERE id = :user_id FOR UPDATE
+            """), {"user_id": user_id}).mappings().one_or_none()
+            if target is None:
+                raise HTTPException(404, "Пользователь не найден.")
+            if not set(data.role_codes).issubset(APPLICATION_ROLE_CODES):
+                raise HTTPException(422, "Недоступный код роли.")
+            role_rows = connection.execute(text("""
+                SELECT id, code FROM public.roles
+                WHERE code = ANY(:role_codes)
+            """), {"role_codes": data.role_codes}).mappings().all()
+            role_ids = {row["code"]: row["id"] for row in role_rows}
+            if set(role_ids) != set(data.role_codes):
+                raise HTTPException(422, "Указан неизвестный или недоступный код роли.")
+
+            old_codes = connection.execute(text("""
+                SELECT r.code
+                FROM public.user_roles ur
+                JOIN public.roles r ON r.id = ur.role_id
+                WHERE ur.user_id = :user_id ORDER BY r.code
+            """), {"user_id": user_id}).scalars().all()
+            old_set = set(old_codes)
+            new_set = set(data.role_codes)
+            if old_set == new_set:
+                return UserRolesSummary(user_id=user_id, role_codes=sorted(new_set))
+            if actor.id == user_id:
+                raise HTTPException(403, "Администратор не может изменять собственные роли.")
+
+            removed_roles = old_set - new_set
+            validate_project_role_removal(connection, user_id, removed_roles)
+            if (
+                target["is_active"]
+                and "admin" in removed_roles
+                and active_admin_count(connection) <= 1
+            ):
+                raise HTTPException(
+                    409, "Нельзя снять роль у последней активной учетной записи администратора."
+                )
+
+            connection.execute(text("""
+                DELETE FROM public.user_roles WHERE user_id = :user_id
+            """), {"user_id": user_id})
+            connection.execute(text("""
+                INSERT INTO public.user_roles (user_id, role_id)
+                VALUES (:user_id, :role_id)
+            """), [
+                {"user_id": user_id, "role_id": role_ids[code]}
+                for code in sorted(new_set)
+            ])
+            audit(connection, actor.id, "user_roles_replaced",
+                  "user_roles", user_id, {
+                      "before": old_codes,
+                      "after": sorted(new_set),
+                      "added": sorted(new_set - old_set),
+                      "removed": sorted(removed_roles),
+                  })
+            return UserRolesSummary(user_id=user_id, role_codes=sorted(new_set))
+    except IntegrityError:
+        raise HTTPException(409, "Конфликт целостности при изменении ролей пользователя.") from None
+    except SQLAlchemyError:
+        raise HTTPException(503, "База данных временно недоступна.") from None
+
+
 @router.get("/users", response_model=list[UserSummary])
 def list_users(
     actor: Annotated[UserPublic, Depends(require_permission("users.manage"))],
@@ -177,6 +523,10 @@ def create_user(
 
     try:
         with engine.begin() as connection:
+            acquire_admin_mutation_lock(connection)
+            require_current_actor(
+                connection, actor.id, {"users.manage", "roles.manage"}
+            )
             roles = connection.execute(
                 text("SELECT id, code FROM public.roles WHERE code = ANY(:codes)"),
                 {"codes": data.role_codes},
@@ -293,16 +643,25 @@ def update_user_status(
     data: UserStatusPatch,
     actor: Annotated[UserPublic, Depends(require_permission("users.manage"))],
 ):
-    if not data.is_active and actor.id == user_id and "admin" in actor.roles:
-        raise HTTPException(403, "Администратор не может отключить собственную учетную запись.")
-
     try:
         with engine.begin() as connection:
+            acquire_admin_mutation_lock(connection)
+            actor_state = require_current_actor(
+                connection, actor.id, {"users.manage"}
+            )
             current = connection.execute(text("""
                 SELECT id, is_active FROM public.users WHERE id = :id FOR UPDATE
             """), {"id": user_id}).mappings().one_or_none()
             if current is None:
                 raise HTTPException(404, "Пользователь не найден.")
+            if (
+                not data.is_active
+                and actor.id == user_id
+                and "admin" in actor_state["roles"]
+            ):
+                raise HTTPException(
+                    403, "Администратор не может отключить собственную учетную запись."
+                )
             if current["is_active"] == data.is_active:
                 return read_user_summary(connection, user_id)
 
@@ -314,20 +673,7 @@ def update_user_status(
                 )
             """), {"id": user_id}).scalar_one()
             if not data.is_active and is_admin:
-                connection.execute(text(
-                    "SELECT pg_advisory_xact_lock(:namespace, :lock_key)"
-                ), {
-                    "namespace": ADMIN_LOCK_NAMESPACE,
-                    "lock_key": ADMIN_LOCK_KEY,
-                })
-                active_admins = connection.execute(text("""
-                    SELECT COUNT(DISTINCT u.id)
-                    FROM public.users u
-                    JOIN public.user_roles ur ON ur.user_id = u.id
-                    JOIN public.roles r ON r.id = ur.role_id
-                    WHERE u.is_active AND r.code = 'admin'
-                """)).scalar_one()
-                if active_admins <= 1:
+                if active_admin_count(connection) <= 1:
                     raise HTTPException(
                         409, "Нельзя отключить последнюю активную учетную запись администратора."
                     )

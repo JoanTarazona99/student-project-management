@@ -6,6 +6,7 @@ import warnings
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.admin_lock import acquire_admin_mutation_lock
 from app.database import engine
 from app.security import hash_password
 
@@ -33,9 +34,7 @@ def main():
 
     try:
         with engine.begin() as connection:
-            connection.execute(
-                text("SELECT pg_advisory_xact_lock(73405201)")
-            )
+            acquire_admin_mutation_lock(connection)
 
             admin_role = connection.execute(
                 text("SELECT id FROM public.roles WHERE code = 'admin'")
