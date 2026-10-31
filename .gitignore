@@ -1,0 +1,16 @@
+
+# Local environment and secrets
+.venv/
+.env
+.env.*
+!.env.example
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runtime files
+uploads/
+backups/
+*.log
