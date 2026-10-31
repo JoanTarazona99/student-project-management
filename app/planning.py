@@ -1,12 +1,15 @@
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Annotated
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
+from fastapi import APIRouter, Depends, HTTPException, Path
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import text
 
+from app.admin_lock import require_current_actor
 from app.auth import UserPublic, require_permission
+from app.deadlines import utc_timestamp
 from app.projects import PROJECT_SCOPE, audit, database, has_role
 
 router = APIRouter(tags=["Планирование и состояние"])
@@ -84,6 +87,45 @@ class PlanInput(BaseModel):
         for previous, current in zip(self.stages, self.stages[1:]):
             if current.starts_at < previous.due_at:
                 raise ValueError("Этапы должны следовать по порядку без пересечения сроков")
+        return self
+
+
+class StageDatesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage_id: int = Field(ge=1, le=9_223_372_036_854_775_807)
+    expected_starts_at: AwareDatetime
+    expected_due_at: AwareDatetime
+    starts_at: AwareDatetime
+    due_at: AwareDatetime
+
+    @field_validator("expected_starts_at", "expected_due_at", "starts_at", "due_at")
+    @classmethod
+    def to_utc(cls, value):
+        return value.astimezone(timezone.utc)
+
+    @model_validator(mode="after")
+    def valid_dates(self):
+        if self.due_at <= self.starts_at:
+            raise ValueError("Срок завершения должен быть позже начала.")
+        return self
+
+
+class PlanDatesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=10, max_length=2000)
+    stages: list[StageDatesInput] = Field(min_length=1, max_length=50)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def unique_stages(self):
+        if len({stage.stage_id for stage in self.stages}) != len(self.stages):
+            raise ValueError("Повторяющиеся ID этапов запрещены.")
         return self
 
 
@@ -205,6 +247,89 @@ def approve_plan(
                      "message": f"План проекта № {project_id} утвержден."})
         audit(connection, actor.id, "plan_approved", "projects", project_id)
         return plan_output(updated, read_stages(connection, project_id))
+
+
+@router.put("/projects/{project_id}/plan/dates")
+def change_plan_dates(
+    project_id: Annotated[int, Path(ge=1, le=9_223_372_036_854_775_807)],
+    data: PlanDatesInput,
+    actor: Annotated[UserPublic, Depends(require_permission("plans.approve"))],
+):
+    with database(True) as connection:
+        connection.execute(text("SET LOCAL lock_timeout = 5000"))
+        connection.execute(text("SET LOCAL statement_timeout = 30000"))
+        connection.execute(text("SET LOCAL transaction_timeout = 60000"))
+        project = project_row(connection, project_id, actor, exclusive=True)
+        stages = connection.execute(text("""
+            SELECT * FROM public.stages WHERE project_id = :id ORDER BY id FOR UPDATE
+        """), {"id": project_id}).mappings().all()
+        require_current_actor(connection, actor.id, {"plans.approve"})
+        if (
+            actor.id == project["student_id"]
+            or actor.id not in (project["supervisor_id"], project["teacher_id"])
+        ):
+            raise HTTPException(403, "Изменение дат разрешает назначенный руководитель или преподаватель, не студент проекта.")
+        if project["plan_approved_at"] is None:
+            raise HTTPException(409, "Сначала необходимо утвердить план.")
+        if not stages or all(stage["status"] == "completed" for stage in stages):
+            raise HTTPException(409, "План не содержит незавершенных этапов.")
+        requested = {stage.stage_id: stage for stage in data.stages}
+        if set(requested) != {stage["id"] for stage in stages}:
+            raise HTTPException(422, "Укажите ровно все текущие этапы этого проекта.")
+        ordered = sorted(stages, key=lambda stage: stage["position"])
+        changes = []
+        for stage in ordered:
+            proposed = requested[stage["id"]]
+            if (
+                proposed.expected_starts_at != stage["starts_at"]
+                or proposed.expected_due_at != stage["due_at"]
+            ):
+                raise HTTPException(409, "Даты плана изменились после чтения. Получите актуальный план.")
+            if proposed.starts_at != stage["starts_at"] or proposed.due_at != stage["due_at"]:
+                if stage["status"] == "completed":
+                    raise HTTPException(409, "Даты завершенного этапа нельзя изменить.")
+                changes.append({
+                    "stage_id": stage["id"], "position": stage["position"],
+                    "before": {
+                        "starts_at": utc_timestamp(stage["starts_at"]),
+                        "due_at": utc_timestamp(stage["due_at"]),
+                    },
+                    "after": {
+                        "starts_at": utc_timestamp(proposed.starts_at),
+                        "due_at": utc_timestamp(proposed.due_at),
+                    },
+                })
+        for previous, current in zip(ordered, ordered[1:]):
+            if requested[current["id"]].starts_at < requested[previous["id"]].due_at:
+                raise HTTPException(422, "Этапы должны следовать по порядку без пересечения сроков.")
+        if changes:
+            connection.execute(text("""
+                UPDATE public.stages SET starts_at = :starts, due_at = :due WHERE id = :id
+            """), [
+                {"id": change["stage_id"], "starts": requested[change["stage_id"]].starts_at,
+                 "due": requested[change["stage_id"]].due_at}
+                for change in changes
+            ])
+            operation_id = str(uuid4())
+            changed_at = connection.execute(text("SELECT clock_timestamp()")).scalar_one()
+            audit(connection, actor.id, "plan_dates_changed", "projects", project_id, {
+                "project_id": project_id, "operation_id": operation_id, "reason": data.reason,
+                "changed_at": utc_timestamp(changed_at), "changes": changes,
+            })
+            recipients = sorted({
+                project["student_id"], project["supervisor_id"], project["teacher_id"],
+            } - {None, actor.id})
+            connection.execute(text("""
+                INSERT INTO public.notifications (recipient_id, project_id, event_key, message)
+                SELECT id, :project, :key, :message FROM public.users
+                WHERE id = ANY(:recipients) AND is_active ORDER BY id
+                ON CONFLICT (recipient_id, event_key) DO NOTHING
+            """), {
+                "project": project_id, "key": f"plan-dates-changed:{operation_id}",
+                "recipients": recipients,
+                "message": f"Изменены даты этапов проекта № {project_id}. Получите актуальный план.",
+            })
+        return plan_output(project, read_stages(connection, project_id))
 
 
 @router.get("/projects/{project_id}/status")
