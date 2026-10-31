@@ -2,16 +2,34 @@ import json
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, field_validator, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.auth import UserPublic, require_permission
 from app.database import engine
+from app.projects import audit
 from app.security import hash_password
 
 router = APIRouter(prefix="/admin", tags=["Пользователи и роли"])
+MAX_USER_ID = 9_223_372_036_854_775_807
+ADMIN_LOCK_NAMESPACE = 5_463_984
+ADMIN_LOCK_KEY = 1
+
+
+def normalize_email_value(value):
+    value = value.strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+        raise ValueError("Некорректный email")
+    return value
+
+
+def normalize_name(value):
+    value = value.strip()
+    if not value:
+        raise ValueError("Имя и фамилия не должны быть пустыми")
+    return value
 
 
 class UserCreate(BaseModel):
@@ -26,18 +44,12 @@ class UserCreate(BaseModel):
     @field_validator("email")
     @classmethod
     def normalize_email(cls, value):
-        value = value.strip().lower()
-        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
-            raise ValueError("Некорректный email")
-        return value
+        return normalize_email_value(value)
 
     @field_validator("first_name", "last_name")
     @classmethod
     def validate_name(cls, value):
-        value = value.strip()
-        if not value:
-            raise ValueError("Имя и фамилия не должны быть пустыми")
-        return value
+        return normalize_name(value)
 
     @field_validator("role_codes")
     @classmethod
@@ -54,6 +66,43 @@ class UserSummary(BaseModel):
     study_group: str | None
     is_active: bool
     roles: list[str]
+
+
+class UserPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str | None = Field(default=None, min_length=3, max_length=254)
+    first_name: str | None = Field(default=None, min_length=1, max_length=100)
+    last_name: str | None = Field(default=None, min_length=1, max_length=100)
+    middle_name: str | None = Field(default=None, max_length=100)
+    study_group: str | None = Field(default=None, max_length=50)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value):
+        return normalize_email_value(value) if value is not None else value
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def validate_name(cls, value):
+        return normalize_name(value) if value is not None else value
+
+    @model_validator(mode="after")
+    def validate_patch(self):
+        if not self.model_fields_set:
+            raise ValueError("Укажите хотя бы одно поле для изменения.")
+        if any(
+            field in self.model_fields_set and getattr(self, field) is None
+            for field in ("email", "first_name", "last_name")
+        ):
+            raise ValueError("Email, имя и фамилия не могут быть пустыми.")
+        return self
+
+
+class UserStatusPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_active: StrictBool
 
 
 class RoleSummary(BaseModel):
@@ -73,6 +122,16 @@ USER_SELECT = """
     LEFT JOIN public.user_roles ur ON ur.user_id = u.id
     LEFT JOIN public.roles r ON r.id = ur.role_id
 """
+
+
+def read_user_summary(connection, user_id):
+    row = connection.execute(
+        text(USER_SELECT + " WHERE u.id = :uid GROUP BY u.id"),
+        {"uid": user_id},
+    ).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(404, "Пользователь не найден.")
+    return UserSummary(**dict(row))
 
 
 @router.get("/roles", response_model=list[RoleSummary])
@@ -169,13 +228,119 @@ def create_user(
                     "details": json.dumps({"roles": data.role_codes}),
                 },
             )
-            result = connection.execute(
-                text(USER_SELECT + " WHERE u.id = :uid GROUP BY u.id"),
-                {"uid": user_id},
-            ).mappings().one()
-            output = UserSummary(**dict(result))
+            output = read_user_summary(connection, user_id)
         return output
     except IntegrityError:
         raise HTTPException(409, "Конфликт данных: проверьте уникальность email.") from None
+    except SQLAlchemyError:
+        raise HTTPException(503, "База данных временно недоступна.") from None
+
+
+@router.patch("/users/{user_id}", response_model=UserSummary)
+def update_user(
+    user_id: Annotated[int, Path(ge=1, le=MAX_USER_ID)],
+    data: UserPatch,
+    actor: Annotated[UserPublic, Depends(require_permission("users.manage"))],
+):
+    changes = data.model_dump(exclude_unset=True)
+    allowed_columns = {
+        "email": "email",
+        "first_name": "first_name",
+        "last_name": "last_name",
+        "middle_name": "middle_name",
+        "study_group": "study_group",
+    }
+    try:
+        with engine.begin() as connection:
+            current = connection.execute(text("""
+                SELECT email, first_name, last_name, middle_name, study_group
+                FROM public.users WHERE id = :id FOR UPDATE
+            """), {"id": user_id}).mappings().one_or_none()
+            if current is None:
+                raise HTTPException(404, "Пользователь не найден.")
+
+            effective = {
+                field: value
+                for field, value in changes.items()
+                if current[field] != value
+            }
+            if effective:
+                assignments = ", ".join(
+                    f"{allowed_columns[field]} = :{field}"
+                    for field in effective
+                )
+                connection.execute(
+                    text(f"UPDATE public.users SET {assignments} WHERE id = :id"),
+                    {**effective, "id": user_id},
+                )
+                audit(connection, actor.id, "user_updated", "users", user_id, {
+                    "changes": {
+                        field: {"old": current[field], "new": value}
+                        for field, value in effective.items()
+                    },
+                })
+            output = read_user_summary(connection, user_id)
+        return output
+    except IntegrityError:
+        raise HTTPException(409, "Конфликт данных: проверьте уникальность email.") from None
+    except SQLAlchemyError:
+        raise HTTPException(503, "База данных временно недоступна.") from None
+
+
+@router.patch("/users/{user_id}/status", response_model=UserSummary)
+def update_user_status(
+    user_id: Annotated[int, Path(ge=1, le=MAX_USER_ID)],
+    data: UserStatusPatch,
+    actor: Annotated[UserPublic, Depends(require_permission("users.manage"))],
+):
+    if not data.is_active and actor.id == user_id and "admin" in actor.roles:
+        raise HTTPException(403, "Администратор не может отключить собственную учетную запись.")
+
+    try:
+        with engine.begin() as connection:
+            current = connection.execute(text("""
+                SELECT id, is_active FROM public.users WHERE id = :id FOR UPDATE
+            """), {"id": user_id}).mappings().one_or_none()
+            if current is None:
+                raise HTTPException(404, "Пользователь не найден.")
+            if current["is_active"] == data.is_active:
+                return read_user_summary(connection, user_id)
+
+            is_admin = connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM public.user_roles ur
+                    JOIN public.roles r ON r.id = ur.role_id
+                    WHERE ur.user_id = :id AND r.code = 'admin'
+                )
+            """), {"id": user_id}).scalar_one()
+            if not data.is_active and is_admin:
+                connection.execute(text(
+                    "SELECT pg_advisory_xact_lock(:namespace, :lock_key)"
+                ), {
+                    "namespace": ADMIN_LOCK_NAMESPACE,
+                    "lock_key": ADMIN_LOCK_KEY,
+                })
+                active_admins = connection.execute(text("""
+                    SELECT COUNT(DISTINCT u.id)
+                    FROM public.users u
+                    JOIN public.user_roles ur ON ur.user_id = u.id
+                    JOIN public.roles r ON r.id = ur.role_id
+                    WHERE u.is_active AND r.code = 'admin'
+                """)).scalar_one()
+                if active_admins <= 1:
+                    raise HTTPException(
+                        409, "Нельзя отключить последнюю активную учетную запись администратора."
+                    )
+
+            connection.execute(text("""
+                UPDATE public.users SET is_active = :is_active WHERE id = :id
+            """), {"is_active": data.is_active, "id": user_id})
+            audit(connection, actor.id, "user_status_changed", "users", user_id, {
+                "changes": {
+                    "is_active": {"old": current["is_active"], "new": data.is_active},
+                },
+            })
+            output = read_user_summary(connection, user_id)
+        return output
     except SQLAlchemyError:
         raise HTTPException(503, "База данных временно недоступна.") from None

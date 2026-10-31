@@ -169,19 +169,23 @@ def scenario(backend, upload_root, monkeypatch):
         "department": ["department"],
         "teacher_department": ["teacher", "department"],
         "admin": ["admin"],
+        "admin2": ["admin"],
+        "account_manager": ["integration-account-manager"],
         "reports_only": ["integration-report-reader"],
     }
     with backend.engine.begin() as connection:
         connection.execute(text("""
-            INSERT INTO public.roles (code, name)
-            VALUES ('integration-report-reader', 'Integration report reader')
+            INSERT INTO public.roles (code, name) VALUES
+                ('integration-report-reader', 'Integration report reader'),
+                ('integration-account-manager', 'Integration account manager')
             ON CONFLICT (code) DO NOTHING
         """))
         connection.execute(text("""
             INSERT INTO public.role_permissions (role_id, permission_id)
             SELECT r.id, p.id
             FROM public.roles r CROSS JOIN public.permissions p
-            WHERE r.code = 'integration-report-reader' AND p.code = 'reports.read'
+            WHERE (r.code = 'integration-report-reader' AND p.code = 'reports.read')
+               OR (r.code = 'integration-account-manager' AND p.code = 'users.manage')
             ON CONFLICT DO NOTHING
         """))
     actors = {}
