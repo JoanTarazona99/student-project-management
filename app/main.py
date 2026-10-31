@@ -5,6 +5,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.auth import router as auth_router
+from app.materials import router as materials_router
 from app.planning import router as planning_router
 from app.projects import router as projects_router
 from app.users import router as users_router
@@ -24,6 +25,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(auth_router)
+app.include_router(materials_router)
 app.include_router(planning_router)
 app.include_router(projects_router)
 app.include_router(users_router)
