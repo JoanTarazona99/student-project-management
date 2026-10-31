@@ -170,6 +170,7 @@ def scenario(backend, upload_root, monkeypatch):
         "teacher_department": ["teacher", "department"],
         "admin": ["admin"],
         "admin2": ["admin"],
+        "admin3": ["admin"],
         "account_manager": ["integration-account-manager"],
         "reports_only": ["integration-report-reader"],
     }
@@ -186,6 +187,7 @@ def scenario(backend, upload_root, monkeypatch):
             FROM public.roles r CROSS JOIN public.permissions p
             WHERE (r.code = 'integration-report-reader' AND p.code = 'reports.read')
                OR (r.code = 'integration-account-manager' AND p.code = 'users.manage')
+               OR (r.code = 'integration-account-manager' AND p.code = 'roles.manage')
             ON CONFLICT DO NOTHING
         """))
     actors = {}
