@@ -62,7 +62,7 @@ def postgres_config(pytestconfig):
                     "--label", "spm.integration-test=true",
                     "--publish", "127.0.0.1::5432",
                     "--tmpfs", "/var/lib/postgresql/data",
-                    "--env", "POSTGRES_DB=student_projects",
+                    "--env", "POSTGRES_DB=postgres",
                     "--env", "POSTGRES_USER=spm_dev",
                     "--env", f"POSTGRES_PASSWORD={password}",
                     "postgres:17",
