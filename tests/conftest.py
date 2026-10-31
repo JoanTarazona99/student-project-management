@@ -22,8 +22,14 @@ TEST_PASSWORD = "integration-only-not-a-real-password"
 
 
 def pytest_addoption(parser):
+    parser.addoption("--reverse-order", action="store_true", help="Run collected cases in reverse order")
     parser.addoption("--postgres-backend", choices=("docker", "native"), default="docker")
     parser.addoption("--pg-bin", default=None, help="Directory containing initdb and postgres")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--reverse-order"):
+        items.reverse()
 
 
 def checked(command, **kwargs):

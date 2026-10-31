@@ -1,6 +1,5 @@
 from contextlib import contextmanager
 from datetime import datetime
-import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.auth import UserPublic, require_permission
+from app.audit import audit
 from app.database import engine
 
 router = APIRouter(tags=["Темы и проекты"])
@@ -23,15 +23,6 @@ def database(write=False):
         raise HTTPException(409, "Конфликт данных. Проверьте связанные записи.") from None
     except SQLAlchemyError:
         raise HTTPException(503, "База данных временно недоступна.") from None
-
-
-def audit(connection, actor_id, action, entity_type, entity_id, details=None):
-    connection.execute(text("""
-        INSERT INTO public.audit_events
-            (actor_id, action, entity_type, entity_id, details)
-        VALUES (:actor, :action, :kind, :id, CAST(:details AS jsonb))
-    """), {"actor": actor_id, "action": action, "kind": entity_type,
-             "id": entity_id, "details": json.dumps(details or {})})
 
 
 def has_role(connection, user_id, role_code):
