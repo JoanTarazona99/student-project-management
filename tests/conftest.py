@@ -159,11 +159,33 @@ def upload_root():
 @pytest.fixture
 def scenario(backend, upload_root, monkeypatch):
     monkeypatch.setattr(backend.materials, "UPLOAD_ROOT", upload_root)
+    role_codes = {
+        "student": ["student"],
+        "supervisor": ["supervisor"],
+        "teacher": ["teacher"],
+        "outsider": ["student"],
+        "unassigned": ["supervisor"],
+        "teacher2": ["teacher"],
+        "department": ["department"],
+        "teacher_department": ["teacher", "department"],
+        "admin": ["admin"],
+        "reports_only": ["integration-report-reader"],
+    }
+    with backend.engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO public.roles (code, name)
+            VALUES ('integration-report-reader', 'Integration report reader')
+            ON CONFLICT (code) DO NOTHING
+        """))
+        connection.execute(text("""
+            INSERT INTO public.role_permissions (role_id, permission_id)
+            SELECT r.id, p.id
+            FROM public.roles r CROSS JOIN public.permissions p
+            WHERE r.code = 'integration-report-reader' AND p.code = 'reports.read'
+            ON CONFLICT DO NOTHING
+        """))
     actors = {}
-    for name, role in (
-        ("student", "student"), ("supervisor", "supervisor"), ("teacher", "teacher"),
-        ("outsider", "student"), ("unassigned", "supervisor"),
-    ):
+    for name, roles in role_codes.items():
         email = f"{name}-{uuid4().hex}@integration.invalid"
         with backend.engine.begin() as connection:
             user_id = connection.execute(text("""
@@ -173,7 +195,10 @@ def scenario(backend, upload_root, monkeypatch):
             connection.execute(text("""
                 INSERT INTO public.user_roles (user_id, role_id)
                 SELECT :user, id FROM public.roles WHERE code = :role
-            """), {"user": user_id, "role": role})
+            """), [
+                {"user": user_id, "role": role}
+                for role in roles
+            ])
         actors[name] = {"id": user_id, "email": email}
 
     with TestClient(backend.app) as client:
@@ -185,7 +210,7 @@ def scenario(backend, upload_root, monkeypatch):
             actor["headers"] = {"Authorization": "Bearer " + response.json()["access_token"]}
         case = Scenario(client, backend.engine, actors, upload_root)
         case.project_id = case.create_project("student", "supervisor")
-        case.other_project_id = case.create_project("outsider", "unassigned")
+        case.other_project_id = case.create_project("outsider", "unassigned", "teacher2")
         case.plan = case.request("student", "PUT", f"/projects/{case.project_id}/plan", 200, json=case.plan_input)
         case.stages = case.plan["stages"]
         yield case
@@ -208,13 +233,13 @@ class Scenario:
         assert response.status_code == status, response.text
         return response.json()
 
-    def create_project(self, student, supervisor):
+    def create_project(self, student, supervisor, teacher="teacher"):
         topic = self.request("teacher", "POST", "/topics", 201, json={"title": uuid4().hex})
         self.request("teacher", "POST", f"/topics/{topic['id']}/approve", 200)
         project = self.request(student, "POST", "/projects", 201, json={
-            "topic_id": topic["id"], "teacher_id": self.actors["teacher"]["id"],
+            "topic_id": topic["id"], "teacher_id": self.actors[teacher]["id"],
         })
-        self.request("teacher", "PUT", f"/projects/{project['id']}/supervisor", 200, json={
+        self.request(teacher, "PUT", f"/projects/{project['id']}/supervisor", 200, json={
             "supervisor_id": self.actors[supervisor]["id"],
         })
         return project["id"]

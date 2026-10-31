@@ -11,6 +11,45 @@ from app.projects import PROJECT_SCOPE, audit, database, has_role
 
 router = APIRouter(tags=["Планирование и состояние"])
 
+PROJECT_STATUS_LABELS = {
+    "planning": "Планирование",
+    "in_progress": "В работе",
+    "under_review": "На проверке",
+    "revision": "На доработке",
+    "completed": "Завершен",
+}
+PROJECT_STATUS_RULES = (
+    ("completed", "completed_stages = total_stages"),
+    ("revision", "has_revision"),
+    ("under_review", "has_under_review"),
+)
+
+
+def project_status_case():
+    rules = " ".join(
+        f"WHEN {condition} THEN '{status}'"
+        for status, condition in PROJECT_STATUS_RULES
+    )
+    return (
+        "CASE WHEN NOT plan_approved OR total_stages = 0 THEN 'planning' "
+        f"{rules} ELSE 'in_progress' END"
+    )
+
+
+def project_status(plan_approved, total_stages, completed_stages,
+                   has_revision, has_under_review):
+    if not plan_approved or not total_stages:
+        return "planning"
+    conditions = {
+        "completed": completed_stages == total_stages,
+        "revision": has_revision,
+        "under_review": has_under_review,
+    }
+    return next(
+        (status for status, _ in PROJECT_STATUS_RULES if conditions[status]),
+        "in_progress",
+    )
+
 
 class StageInput(BaseModel):
     title: str = Field(min_length=1, max_length=200)
@@ -179,16 +218,14 @@ def get_status(
         now = connection.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one()
         total = len(stages)
         completed = sum(row["status"] == "completed" for row in stages)
-        if project["plan_approved_at"] is None or not total:
-            status, name = "planning", "Планирование"
-        elif completed == total:
-            status, name = "completed", "Завершен"
-        elif any(row["status"] == "revision" for row in stages):
-            status, name = "revision", "На доработке"
-        elif any(row["status"] == "under_review" for row in stages):
-            status, name = "under_review", "На проверке"
-        else:
-            status, name = "in_progress", "В работе"
+        status = project_status(
+            project["plan_approved_at"] is not None,
+            total,
+            completed,
+            any(row["status"] == "revision" for row in stages),
+            any(row["status"] == "under_review" for row in stages),
+        )
+        name = PROJECT_STATUS_LABELS[status]
         progress = (
             float((Decimal(completed) * 100 / Decimal(total)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
             if total else None

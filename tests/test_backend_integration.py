@@ -283,7 +283,9 @@ def test_notification_recipients_events_and_idempotence(scenario, decision):
         "supervisor": {f"material-uploaded:{material['id']}"},
         "teacher": {f"plan-approved:{case.project_id}", f"material-uploaded:{material['id']}",
                     f"material-reviewed:{material['id']}"},
-        "outsider": set(), "unassigned": set(),
+        "outsider": set(), "unassigned": set(), "teacher2": set(),
+        "department": set(), "teacher_department": set(), "admin": set(),
+        "reports_only": set(),
     }
     for actor, keys in expected.items():
         rows = case.request(actor, "GET", "/notifications", 200)
