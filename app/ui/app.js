@@ -610,36 +610,83 @@
       message(`Текущая сессия: ${me.email}. Права получены из /auth/me, не вычислены по ролям интерфейсом.`));
     table(content, "Роли текущей сессии", ["Код"], me.roles.map(code => [code]));
     table(content, "Эффективные разрешения", ["Код"], me.permissions.map(code => [code]));
-    content.append(message("API не предоставляет эффективные права другой учетной записи. Пользователь может проверить их после собственного входа. Роль admin не означает все права."));
+    content.append(message("Эффективные права других учетных записей доступны уполномоченному администратору в деталях. Роль admin не означает все права."));
   }
-  async function accounts(offset = 0, result = null) {
-    const rows = await api(`/admin/users?limit=10&offset=${offset}`);
+  async function accounts(offset = 0, result = null, q = "") {
+    const data = await api(`/admin/users?${new URLSearchParams({limit: 10, offset, q, paginated: true})}`);
+    const rows = data.items;
     content.replaceChildren(node("h2", "Учетные записи"),
-      message("Страницы по 10 записей. API не предоставляет поиск, общий счетчик или GET отдельной учетной записи."));
-    if (result && !rows.some(row => row.id === result.id)) {
-      content.append(message(`Подтвержденная учетная запись № ${result.id}: ${result.email}; ${result.is_active ? "Активна" : "Заблокирована"}. Она вне текущей страницы; откройте ее страницу для дальнейших действий.`));
-    }
+      message(`Всего: ${data.total}. Страница: ${data.page}. Размер: ${data.limit}.`));
+    const search = node("form");
+    const query = field(search, "Поиск по email, имени или фамилии", "q", "search", {maxlength: "254"});
+    query.value = q;
+    search.append(node("button", "Найти учетные записи", {type: "submit"}));
+    search.addEventListener("submit", event => { event.preventDefault(); open(() => accounts(0, null, query.value)); });
+    content.append(search);
     table(content, "Учетные записи", ["ID", "Email", "Имя", "Фамилия", "Отчество", "Группа", "Состояние", "Роли", "Действия"],
       rows.map(row => {
         const actions = node("div", undefined, {class: "actions"});
+        actions.append(button(`Открыть учетную запись ${row.id}`, () => open(() => accountDetail(row.id))));
         actions.append(button(`Изменить данные ${row.id}`, () => accountEditor(row, offset)));
         const selfAdmin = me.id === row.id && me.roles.includes("admin");
         actions.append(button(`${row.is_active ? "Заблокировать" : "Реактивировать"} ${row.id}`,
           () => accountStatus(row, offset), selfAdmin));
         if (selfAdmin) actions.append(message("Нельзя заблокировать собственную учетную запись администратора."));
-        if (roleAdministrator()) actions.append(button(`Роли учетной записи ${row.id}`, () => open(() => accountRoles(row.id))));
+        if (roleAdministrator()) actions.append(button(`Роли учетной записи ${row.id}`, () => open(() => accountRoles(row.id))),
+          button(`Эффективные права ${row.id}`, () => open(() => accountDetail(row.id))));
         return [row.id, row.email, row.first_name, row.last_name, row.middle_name, row.study_group,
           row.is_active ? "Активна" : "Заблокирована", row.roles.join(", "), actions];
       }));
-    pager(content, offset, 10, rows.length === 10, next => accounts(next));
+    pager(content, offset, 10, offset + rows.length < data.total, next => accounts(next, null, q));
     const pageForm = node("form");
     const pageOffset = field(pageForm, "Смещение страницы", "offset", "number",
       {min: "0", max: String(Number.MAX_SAFE_INTEGER), required: ""});
     pageOffset.value = offset;
     pageForm.append(node("button", "Открыть смещение", {type: "submit"}));
-    pageForm.addEventListener("submit", event => { event.preventDefault(); open(() => accounts(Number(pageOffset.value))); });
+    pageForm.addEventListener("submit", event => { event.preventDefault(); open(() => accounts(Number(pageOffset.value), null, q)); });
     content.append(pageForm);
     if (allowed("roles.manage")) content.append(button("Создать учетную запись", () => open(() => accountCreate())));
+    if (result) {
+      const detail = await renderAccountDetail(result.id, false);
+      content.prepend(detail);
+      focus(detail);
+    }
+  }
+  async function renderAccountDetail(id, actions = true) {
+    const user = await api(`/admin/users/${id}`);
+    const effective = roleAdministrator() ? await api(`/admin/users/${id}/effective-permissions`) : null;
+    const region = node("section", undefined, {"aria-label": `Учетная запись ${id}`});
+    region.append(node("h3", `Учетная запись № ${id}`));
+    const values = node("dl");
+    for (const [label, value] of [["ID", user.id], ["Email", user.email], ["Имя", user.first_name],
+      ["Фамилия", user.last_name], ["Отчество", user.middle_name], ["Группа", user.study_group],
+      ["Состояние", user.is_active ? "Активна" : "Заблокирована"]]) {
+      values.append(node("dt", label), node("dd", value ?? "—"));
+    }
+    region.append(values);
+    table(region, "Роли учетной записи", ["Код"], user.roles.map(code => [code]));
+    if (effective) table(region, "Эффективные права учетной записи", ["Код"], effective.permission_codes.map(code => [code]));
+    else region.append(message("Для эффективных прав нужны users.manage, roles.manage и активная роль admin."));
+    if (actions) {
+      region.append(button(`Изменить данные ${id}`, () => accountEditor(user, 0)),
+        button(`${user.is_active ? "Заблокировать" : "Реактивировать"} ${id}`,
+          () => accountStatus(user, 0), me.id === user.id && me.roles.includes("admin")));
+      if (roleAdministrator()) {
+        region.append(button(`Роли учетной записи ${id}`, () => open(() => accountRoles(id))));
+        user.roles.filter(code => editableRoles.has(code)).forEach(code => region.append(
+          button(`Разрешения роли ${code}`, () => open(() => rolePermissions(code, id)))));
+      }
+      region.append(button("Обновить детали и эффективные права", () => open(() => accountDetail(id))));
+    } else region.append(button(`Открыть учетную запись ${id}`, () => open(() => accountDetail(id))));
+    return region;
+  }
+  async function accountDetail(id) {
+    await refreshIdentity();
+    const region = await renderAccountDetail(id);
+    content.replaceChildren(node("h2", "Детали учетной записи"), region,
+      message("Данные перечитываются явно; обновление других сессий в реальном времени не обещается."),
+      button("К учетным записям", () => open(() => accounts())));
+    focus(region);
   }
   function accountEditor(user, offset) {
     operationForm(`Изменение учетной записи № ${user.id}`, () => accounts(offset), form => {
@@ -668,7 +715,10 @@
       return {summary: `Изменить учетную запись № ${user.id}\n${Object.entries(body).map(([key, value]) =>
         `${key}: ${user[key] ?? "—"} → ${value ?? "null"}`).join("\n")}`,
         execute: jsonOperation(`/admin/users/${user.id}`, "PATCH", body)};
-    }, async result => { await refreshIdentity(); await accounts(offset, result); });
+    }, async result => {
+      await refreshIdentity();
+      await accounts(offset, result || await api(`/admin/users/${user.id}`));
+    });
   }
   function accountStatus(user, offset) {
     const active = !user.is_active;
@@ -677,7 +727,10 @@
         message("Блокировка запрещает вход и доступ с ранее выданным JWT, но не удаляет данные/назначения. После реактивации неистекший JWT снова может работать; постоянного отзыва нет. Последний активный администратор защищен сервером."));
     }, () => ({summary: `${active ? "Реактивировать" : "Заблокировать"} № ${user.id}: ${user.email}`,
       execute: jsonOperation(`/admin/users/${user.id}/status`, "PATCH", {is_active: active})}),
-    async result => { await refreshIdentity(); await accounts(offset, result); });
+    async result => {
+      await refreshIdentity();
+      await accounts(offset, result || await api(`/admin/users/${user.id}`));
+    });
   }
   async function accountCreate() {
     const catalog = await api("/admin/roles");
@@ -737,7 +790,7 @@
     const catalog = await api("/admin/roles");
     content.replaceChildren(node("h2", `Роли учетной записи № ${id}`),
       message("API заменяет весь набор ролей. Подтверждение показывает исходный и новый набор. Нет expected/версии: перечитайте данные перед изменением при конкуренции."),
-      message("Эффективные права другой учетной записи недоступны через API. Они не вычисляются интерфейсом; доступны пользователю в «Мои эффективные права»."));
+      message("Роли и эффективные права перечитываются сервером, не вычисляются в UI."));
     const self = String(me.id) === String(id);
     table(content, "Назначенные роли", ["Код", "Действие"], current.role_codes.map(code => [code,
       button(`Снять роль ${code}`, () => roleChange(id, current.role_codes, code, false), self || current.role_codes.length <= 1)]));
@@ -747,6 +800,7 @@
       () => roleChange(id, current.role_codes, role.code, true), self || current.role_codes.length >= 5)));
     content.append(message("Нельзя снимать назначенную проектам учебную роль или роль последнего активного администратора; сервер проверяет эти условия."),
       button("Обновить роли", () => open(() => accountRoles(id))));
+    if (allowed("users.manage")) content.append(await renderAccountDetail(id, false));
   }
   function roleChange(id, before, code, add) {
     const after = add ? [...before, code].sort() : before.filter(item => item !== code);
@@ -764,27 +818,28 @@
     pager(content, offset, 10, offset + 10 < catalog.length, next => permissionCatalog(next));
     content.append(button("К ролям", () => open(() => roleCatalog())));
   }
-  async function rolePermissions(code) {
+  async function rolePermissions(code, accountId = null) {
     const current = await api(`/admin/roles/${encodeURIComponent(code)}/permissions`);
     const catalog = await api("/admin/permissions");
     await refreshIdentity();
     content.replaceChildren(node("h2", `Разрешения роли ${code}`),
       message("Изменяется весь набор. Политику допустимых разрешений проверяет сервер: admin не получает глобальные учебные права и сохраняет users.manage/roles.manage."),
-      message("Изменение касается всех носителей роли. Эффективные права других аккаунтов API не предоставляет; текущая сессия перечитывается через /auth/me. Нет expected/версии набора."));
+      message("Изменение касается всех носителей роли. Выбранная учетная запись и текущая сессия перечитываются явно. Нет expected/версии набора."));
     table(content, "Разрешения роли", ["Код", "Действие"], current.permission_codes.map(permission => [permission,
-      button(`Снять разрешение ${permission}`, () => permissionChange(code, current.permission_codes, permission, false))]));
+      button(`Снять разрешение ${permission}`, () => permissionChange(code, current.permission_codes, permission, false, accountId))]));
     catalog.filter(item => !current.permission_codes.includes(item.code)).forEach(item => content.append(
-      button(`Назначить разрешение ${item.code}`, () => permissionChange(code, current.permission_codes, item.code, true))));
-    content.append(button("Обновить разрешения роли", () => open(() => rolePermissions(code))),
+      button(`Назначить разрешение ${item.code}`, () => permissionChange(code, current.permission_codes, item.code, true, accountId))));
+    content.append(button("Обновить разрешения роли", () => open(() => rolePermissions(code, accountId))),
       button("Мои эффективные права", () => open(() => effectivePermissions())));
+    if (accountId !== null && allowed("users.manage")) content.append(await renderAccountDetail(accountId, false));
   }
-  function permissionChange(code, before, permission, add) {
+  function permissionChange(code, before, permission, add, accountId) {
     const after = add ? [...before, permission].sort() : before.filter(item => item !== permission);
-    operationForm("Изменение разрешений роли", () => rolePermissions(code), form => form.append(
+    operationForm("Изменение разрешений роли", () => rolePermissions(code, accountId), form => form.append(
       message(`Все учетные записи с ролью ${code} затронуты. Сервер ограничивает разрешения политикой роли.`)),
     () => ({summary: `${add ? "Назначить" : "Снять"} разрешение ${permission} роли ${code}\nДо: ${before.join(", ") || "—"}\nПосле: ${after.join(", ") || "—"}`,
       execute: jsonOperation(`/admin/roles/${encodeURIComponent(code)}/permissions`, "PUT", {permission_codes: after})}),
-    async () => { await refreshIdentity(); await rolePermissions(code); });
+    async () => { await refreshIdentity(); await rolePermissions(code, accountId); });
   }
   login();
 })();

@@ -97,6 +97,20 @@ class UserSummary(BaseModel):
     roles: list[str]
 
 
+class UserPage(BaseModel):
+    total: int
+    page: int
+    limit: int
+    offset: int
+    items: list[UserSummary]
+
+
+class UserEffectivePermissions(BaseModel):
+    user_id: int
+    role_codes: list[str]
+    permission_codes: list[str]
+
+
 class UserPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -493,18 +507,74 @@ def replace_user_roles(
         raise HTTPException(503, "База данных временно недоступна.") from None
 
 
-@router.get("/users", response_model=list[UserSummary])
+@router.get("/users", response_model=list[UserSummary] | UserPage)
 def list_users(
     actor: Annotated[UserPublic, Depends(require_permission("users.manage"))],
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
+    q: Annotated[str, Query(max_length=254)] = "",
+    paginated: bool = False,
+):
+    pattern = "%" + q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    parameters = {"pattern": pattern, "limit": limit, "offset": offset}
+    predicate = """
+        WHERE (u.email ILIKE :pattern ESCAPE '\\'
+            OR u.first_name ILIKE :pattern ESCAPE '\\'
+            OR u.last_name ILIKE :pattern ESCAPE '\\')
+    """
+    try:
+        with engine.connect().execution_options(isolation_level="REPEATABLE READ") as connection:
+            with connection.begin():
+                connection.execute(text("SET TRANSACTION READ ONLY"))
+                require_current_actor(connection, actor.id, {"users.manage"})
+                rows = connection.execute(
+                    text(USER_SELECT + predicate + " GROUP BY u.id ORDER BY u.id LIMIT :limit OFFSET :offset"),
+                    parameters,
+                ).mappings().all()
+                items = [UserSummary(**dict(row)) for row in rows]
+                if not paginated:
+                    return items
+                total = connection.execute(text(
+                    "SELECT count(*) FROM public.users u " + predicate
+                ), parameters).scalar_one()
+                return UserPage(total=total, page=offset // limit + 1,
+                                limit=limit, offset=offset, items=items)
+    except SQLAlchemyError:
+        raise HTTPException(503, "База данных временно недоступна.") from None
+
+
+@router.get("/users/{user_id}", response_model=UserSummary)
+def get_user(
+    user_id: Annotated[int, Path(ge=1, le=MAX_USER_ID)],
+    actor: Annotated[UserPublic, Depends(require_permission("users.manage"))],
 ):
     try:
         with engine.connect() as connection:
-            return connection.execute(
-                text(USER_SELECT + " GROUP BY u.id ORDER BY u.id LIMIT :limit OFFSET :offset"),
-                {"limit": limit, "offset": offset},
-            ).mappings().all()
+            return read_user_summary(connection, user_id)
+    except SQLAlchemyError:
+        raise HTTPException(503, "База данных временно недоступна.") from None
+
+
+@router.get("/users/{user_id}/effective-permissions", response_model=UserEffectivePermissions)
+def get_user_effective_permissions(
+    user_id: Annotated[int, Path(ge=1, le=MAX_USER_ID)],
+    actor: Annotated[UserPublic, Depends(require_role_administrator)],
+):
+    try:
+        with engine.connect().execution_options(isolation_level="REPEATABLE READ") as connection:
+            with connection.begin():
+                connection.execute(text("SET TRANSACTION READ ONLY"))
+                require_current_actor(connection, actor.id, {"users.manage", "roles.manage"},
+                                      require_admin=True)
+                user = read_user_summary(connection, user_id)
+                permissions = connection.execute(text("""
+                    SELECT DISTINCT p.code FROM public.user_roles ur
+                    JOIN public.role_permissions rp ON rp.role_id = ur.role_id
+                    JOIN public.permissions p ON p.id = rp.permission_id
+                    WHERE ur.user_id = :id ORDER BY p.code
+                """), {"id": user_id}).scalars().all()
+                return UserEffectivePermissions(user_id=user.id, role_codes=user.roles,
+                                                permission_codes=permissions)
     except SQLAlchemyError:
         raise HTTPException(503, "База данных временно недоступна.") from None
 
