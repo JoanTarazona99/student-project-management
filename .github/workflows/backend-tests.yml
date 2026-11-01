@@ -29,6 +29,8 @@ jobs:
         run: |
           docker info
           docker pull postgres:17
+      - name: Install test-only Chromium
+        run: python -m playwright install --with-deps chromium
       - name: Existing 14 unit tests
         run: python -m scripts.test_materials_unit
       - name: Integration tests with owned PostgreSQL and temporary storage

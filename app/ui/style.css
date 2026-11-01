@@ -1,0 +1,40 @@
+:root { color-scheme: light; font-family: system-ui, sans-serif; color: #172535; background: #f2f5f8; }
+* { box-sizing: border-box; }
+body { margin: 0; overflow-wrap: anywhere; }
+header, main, footer { max-width: 1200px; margin: auto; padding: 1.5rem; }
+header { border-bottom: 3px solid #25627c; }
+h1 { font-size: clamp(1.4rem, 4vw, 2rem); }
+h2 { margin-top: 0; }
+main { min-height: 50vh; }
+nav, .actions { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
+button, input, select { font: inherit; }
+button { background: #155675; color: white; border: 1px solid #155675; padding: .6rem .9rem; border-radius: .3rem; cursor: pointer; }
+button:hover { background: #103e55; }
+button:disabled { background: #dae1e7; color: #475463; border-color: #8795a2; cursor: default; }
+:focus-visible { outline: 3px solid #bd4a00; outline-offset: 3px; }
+form { max-width: 760px; }
+label { display: flex; flex-direction: column; gap: .3rem; margin: .8rem 0; font-weight: 600; }
+label.check { flex-direction: row; align-items: center; }
+input, select { background: white; color: #172535; border: 1px solid #687989; padding: .55rem; border-radius: .25rem; min-width: 0; }
+input[type=checkbox] { width: 1.2rem; height: 1.2rem; }
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0 1rem; }
+.table-wrap { overflow-x: auto; border: 1px solid #b7c4cf; background: white; margin: 1rem 0; }
+table { border-collapse: collapse; width: 100%; }
+caption { text-align: left; padding: .8rem; font-weight: 600; }
+th, td { padding: .75rem; border-bottom: 1px solid #d4dfe7; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+th { background: #e5edf3; }
+td { min-width: 110px; max-width: 350px; white-space: pre-wrap; }
+.notice { padding: 1rem; border-left: 4px solid #25627c; background: white; white-space: pre-wrap; }
+.error { border-color: #a52a21; color: #8c211a; }
+dl { display: grid; grid-template-columns: minmax(130px, 1fr) 3fr; gap: .6rem; }
+dt { font-weight: bold; }
+dd { margin: 0; overflow-wrap: anywhere; }
+footer { color: #425466; border-top: 1px solid #b7c4cf; }
+.skip { position: absolute; left: -10000px; }
+.skip:focus { left: 1rem; top: 1rem; background: white; padding: .8rem; z-index: 2; }
+@media (max-width: 520px) {
+  header, main, footer { padding: 1rem; }
+  nav button { flex: 1 1 140px; }
+  dl { grid-template-columns: 1fr; }
+  dd { margin-bottom: .5rem; }
+}
