@@ -270,14 +270,14 @@ def test_delayed_real_response_cannot_repopulate_after_logout_or_new_login(brows
       window.fetch = async (...args) => {
         const response = await original(...args);
         if (String(args[0]).startsWith('/projects?')) {
-          window.received = true;
+          document.body.dataset.responseReceived = "true";
           await new Promise(resolve => { window.releaseResponse = resolve; });
         }
         return response;
       };
     }""")
     page.get_by_role("button", name="Проекты", exact=True).click()
-    page.wait_for_function("window.received === true")
+    expect(page.locator("body")).to_have_attribute("data-response-received", "true")
     page.get_by_role("button", name="Выйти", exact=True).click()
     login(page, scenario, "admin")
     page.evaluate("window.releaseResponse()")
