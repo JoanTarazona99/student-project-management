@@ -11,6 +11,7 @@ from app.projects import router as projects_router
 from app.reports import router as reports_router
 from app.users import router as users_router
 from app.database import engine
+from app.web_ui import router as web_ui_router
 
 
 @asynccontextmanager
@@ -31,6 +32,7 @@ app.include_router(planning_router)
 app.include_router(projects_router)
 app.include_router(reports_router)
 app.include_router(users_router)
+app.include_router(web_ui_router)
 
 
 @app.get("/", tags=["Система"])

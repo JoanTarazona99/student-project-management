@@ -9,6 +9,7 @@ TestClient, SQLAlchemy и psycopg. Правила приложения и SQL-с
 
 ```console
 python -m pip install -r requirements-test.txt
+python -m playwright install chromium
 python -m scripts.test_materials_unit
 python -m pytest tests -v
 ```
@@ -65,7 +66,10 @@ Engine, авторизация, SQL и обработчики не подмен�
 Workflow `.github/workflows/backend-tests.yml` выполняется для PR в main,
 push и вручную через Actions → Backend tests → Run workflow.
 Он устанавливает закрепленные зависимости, проверяет Docker, загружает
-PostgreSQL, выполняет 14 прежних unit-тестов и интеграционные тесты.
+PostgreSQL и тестовый Chromium с зависимостями ОС, выполняет 14 прежних
+unit-тестов, интеграционные и настоящие браузерные тесты.
+Runner закреплен на `ubuntu-24.04` для совместимости с закрепленным Playwright;
+`ubuntu-latest` с Ubuntu 26.04 этой версией пока не поддерживается.
 Секреты GitHub, рабочий `.env` и компьютер пользователя не нужны.
 
 Проверяются авторизация и скрытие чужих ресурсов (401/403/404), утверждение
@@ -90,6 +94,12 @@ PostgreSQL, выполняет 14 прежних unit-тестов и интег
 полный набор этапов, ожидаемые даты и конфликты, неизменность completed,
 сохранение материалов и состояний, аудит/уведомления, rollback и гонки
 с принятием/генерацией сроков. См. [README_plan_dates_RU.md](./README_plan_dates_RU.md).
+Минимальный web-интерфейс проверяется отдельно через HTTP и Playwright Chromium:
+вход, действительные права, данные/фильтры/загрузка, уведомления, ошибки, смена
+сессии, безопасный DOM и узкий экран. HTTP-сервер, браузер и файлы принадлежат
+fixtures, не пользователю. См. [README_web_ui_RU.md](./README_web_ui_RU.md).
+Для только браузерных проверок: `python -m pytest tests/test_web_ui_browser.py -v`
+с теми же параметрами PostgreSQL. Отсутствие Chromium — ошибка, не skip.
 
 Для отдельной защиты «только последняя ожидающая версия» создается SQL-допустимое
 состояние с двумя непроверенными версиями: штатный API сам не позволяет его
