@@ -25,6 +25,8 @@ th, td { padding: .75rem; border-bottom: 1px solid #d4dfe7; text-align: left; ve
 th { background: #e5edf3; }
 td { min-width: 110px; max-width: 350px; white-space: pre-wrap; }
 .notice { padding: 1rem; border-left: 4px solid #25627c; background: white; white-space: pre-wrap; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 1rem; background: white; }
+fieldset { min-width: 0; margin: 1rem 0; border: 1px solid #687989; }
 .error { border-color: #a52a21; color: #8c211a; }
 dl { display: grid; grid-template-columns: minmax(130px, 1fr) 3fr; gap: .6rem; }
 dt { font-weight: bold; }
