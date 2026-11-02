@@ -1,0 +1,6 @@
+Principal rename records: []
+Three-iteration rename records: []
+Rename detection uses Git -M (default 50% similarity).
+If a rename occurs, count its destination path; do not silently merge path histories.
+
+$ git log --full-history -m "--format=%H%nParents: %P%nAuthor: %an%nAuthor date: %aI%nCommit date: %cI%nSubject: %s" --name-status --diff-filter=R -M a33d21d1a80b6ce959e286e993d49da99e6a5d28..24946dd8873615ab01a86bde9eed839f0307b98f

@@ -1,0 +1,55 @@
+$ git show -s "--format=%H%nParents: %P%nAuthor: %an%nAuthor date: %aI%nCommit date: %cI%nSubject: %s" cfb1f0423e8959a2d232f427f0aa355811947eec
+cfb1f0423e8959a2d232f427f0aa355811947eec
+Parents: 4ebc1277819996a76f5e66e2b2aaa5723eee3e82 ee7816bed74fe73dde1f0b71b0c4e0d107ccebad
+Author: Joan Tarazona
+Author date: 2026-11-02T09:57:14+03:00
+Commit date: 2026-11-02T09:57:14+03:00
+Subject: Merge pull request #15 from JoanTarazona99/maintenance/v3.0
+
+$ git show -s "--format=%H%nParents: %P%nAuthor: %an%nAuthor date: %aI%nCommit date: %cI%nSubject: %s" a82816f5c238ecc916f82f043c11874c4a718b8e
+a82816f5c238ecc916f82f043c11874c4a718b8e
+Parents: cfb1f0423e8959a2d232f427f0aa355811947eec
+Author: Lab6 Simulated Developer A
+Author date: 2026-11-02T21:54:00+03:00
+Commit date: 2026-11-02T21:54:00+03:00
+Subject: Clarify case-insensitive catalog search help
+
+$ git show -s "--format=%H%nParents: %P%nAuthor: %an%nAuthor date: %aI%nCommit date: %cI%nSubject: %s" bedb7ec93614547f644fcc9585d60ab80b4b07ad
+bedb7ec93614547f644fcc9585d60ab80b4b07ad
+Parents: cfb1f0423e8959a2d232f427f0aa355811947eec
+Author: Lab6 Simulated Developer B
+Author date: 2026-11-02T21:54:36+03:00
+Commit date: 2026-11-02T21:54:36+03:00
+Subject: Clarify literal characters in catalog search help
+
+$ git show -s "--format=%H%nParents: %P%nAuthor: %an%nAuthor date: %aI%nCommit date: %cI%nSubject: %s" fbaa40aa970027d218eaf41202b6c920f3dead45
+fbaa40aa970027d218eaf41202b6c920f3dead45
+Parents: cfb1f0423e8959a2d232f427f0aa355811947eec a82816f5c238ecc916f82f043c11874c4a718b8e
+Author: JoanTarazona99
+Author date: 2026-11-02T21:54:46+03:00
+Commit date: 2026-11-02T21:54:46+03:00
+Subject: Merge simulated contribution A for Lab 6
+
+$ git show -s "--format=%H%nParents: %P%nAuthor: %an%nAuthor date: %aI%nCommit date: %cI%nSubject: %s" 59786e81ccc55b978aaae3bac9b91ccd03c855d7
+59786e81ccc55b978aaae3bac9b91ccd03c855d7
+Parents: fbaa40aa970027d218eaf41202b6c920f3dead45 bedb7ec93614547f644fcc9585d60ab80b4b07ad
+Author: JoanTarazona99
+Author date: 2026-11-02T21:54:59+03:00
+Commit date: 2026-11-02T21:54:59+03:00
+Subject: Merge simulated contribution B and combine catalog help
+
+$ git show -s "--format=%H%nParents: %P%nAuthor: %an%nAuthor date: %aI%nCommit date: %cI%nSubject: %s" 66879b0ab34e2bf1d705d3bc806e319446303d1f
+66879b0ab34e2bf1d705d3bc806e319446303d1f
+Parents: 59786e81ccc55b978aaae3bac9b91ccd03c855d7
+Author: JoanTarazona99
+Author date: 2026-11-02T22:20:47+03:00
+Commit date: 2026-11-02T22:20:47+03:00
+Subject: Document Lab 6 team simulation and conflict evidence
+
+$ git show -s "--format=%H%nParents: %P%nAuthor: %an%nAuthor date: %aI%nCommit date: %cI%nSubject: %s" 24946dd8873615ab01a86bde9eed839f0307b98f
+24946dd8873615ab01a86bde9eed839f0307b98f
+Parents: cfb1f0423e8959a2d232f427f0aa355811947eec 66879b0ab34e2bf1d705d3bc806e319446303d1f
+Author: Joan Tarazona
+Author date: 2026-11-02T22:52:38+03:00
+Commit date: 2026-11-02T22:52:38+03:00
+Subject: Merge pull request #16 from JoanTarazona99/lab6/team-sim-integration
