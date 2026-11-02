@@ -110,6 +110,38 @@ def test_account_roles_opened_from_role_catalog_returns_to_role_catalog(browser_
     expect(page.get_by_role("heading", name="Роли", exact=True)).to_be_visible()
 
 
+def test_search_enter_and_keyboard_return_at_360px(browser_page, scenario):
+    page, case = browser_page, scenario
+    marker = uuid4().hex
+    users = [
+        create_account(case, email=f"{marker}-{index}@integration.invalid", first_name=f"Keyboard{marker}")
+        for index in range(12)
+    ]
+    page.set_viewport_size({"width": 360, "height": 800})
+    enter(page, case.actors["admin"]["email"])
+    section(page, "Учетные записи")
+    search_field = page.get_by_label("Поиск по email, имени или фамилии", exact=True)
+    search_field.fill(marker)
+    search_field.press("Enter")
+    expect(page.get_by_text(f"Всего: 12. Страница: 1. Размер: 10.", exact=True)).to_be_visible()
+    expect(search_field).to_be_focused()
+
+    next_page = page.get_by_role("button", name="Далее", exact=True)
+    next_page.focus()
+    next_page.press("Enter")
+    expect(page.get_by_label("Смещение страницы", exact=True)).to_have_value("10")
+    open_target = page.get_by_role("button", name=f"Открыть учетную запись {users[-1]['id']}", exact=True)
+    open_target.focus()
+    open_target.press("Enter")
+    expect(page.get_by_role("heading", name="Детали учетной записи", exact=True)).to_be_visible()
+    return_button = page.get_by_role("button", name="К учетным записям", exact=True)
+    return_button.focus()
+    return_button.press("Enter")
+    expect_catalog_context(page, marker, 10)
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    assert page.evaluate("localStorage.length === 0 && sessionStorage.length === 0")
+
+
 def test_mutation_that_preserves_filter_refreshes_detail_and_page(browser_page, scenario):
     page, case = browser_page, scenario
     marker = uuid4().hex

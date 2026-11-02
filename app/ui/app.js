@@ -8,6 +8,7 @@
   let token = null;
   let me = null;
   let generation = 0;
+  let helpSequence = 0;
   let controller = new AbortController();
 
   function node(tag, text, attributes = {}) {
@@ -24,6 +25,17 @@
   }
   function message(text, error = false) {
     return node("p", text, {class: error ? "notice error" : "notice", role: error ? "alert" : "status"});
+  }
+  function associateHelp(control, description) {
+    const describedBy = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+    describedBy.add(description.id);
+    control.setAttribute("aria-describedby", [...describedBy].join(" "));
+  }
+  function help(parent, text, controls = []) {
+    const description = node("p", text, {id: `ui-help-${++helpSequence}`, class: "help"});
+    parent.append(description);
+    controls.forEach(control => associateHelp(control, description));
+    return description;
   }
   function date(value) {
     return value === null || value === undefined ? "—" : new Date(value).toISOString().replace("T", " ").replace(".000Z", " UTC").replace("Z", " UTC");
@@ -105,6 +117,10 @@
     content.replaceChildren(message("Загрузка…"));
     try {
       await view();
+      if (captured === generation && !content.contains(document.activeElement)) {
+        const target = content.querySelector("h2") || content.querySelector("form input, form textarea, form select, form button");
+        if (target) focus(target);
+      }
     } catch (error) {
       if (error.name === "AbortError" || captured !== generation) return;
       const info = message(`${confirmed}${error.message}`, true);
@@ -500,7 +516,8 @@
     if (responsible(project) && allowed("plans.approve")) {
       if (!plan.approved && plan.stages.length) content.append(button("Утвердить план", () => operationForm(
         "Утверждение плана", () => detail(id), form => {
-          form.append(message(plan.stages.map(stage => `${stage.position}. ${stage.title}: ${date(stage.starts_at)} — ${date(stage.due_at)}`).join("\n")));
+          form.append(message("Утверждение — отдельное действие назначенного руководителя или преподавателя. Предложенный план еще не утвержден."),
+            message(plan.stages.map(stage => `${stage.position}. ${stage.title}: ${date(stage.starts_at)} — ${date(stage.due_at)}`).join("\n")));
         }, () => ({summary: "Утвердить показанное предложение плана.", execute: () => api(`/projects/${id}/plan/approve`, {method: "POST"})}),
         () => detail(id))));
       if (plan.approved && plan.stages.some(stage => stage.status !== "completed")) {
@@ -511,12 +528,16 @@
   async function planEditor(id, dates) {
     const plan = await api(`/projects/${id}/plan`);
     operationForm(dates ? "Изменение дат" : "Предложение плана", () => detail(id), form => {
-      form.append(message(dates ? "Ожидаемые даты сохранены из актуального GET. Завершенные этапы неизменны." :
-        plan.stages.length ? "Существующее предложение будет заменено после подтверждения." : "Составьте последовательные этапы."));
+      form.append(message(dates ?
+        "Редактируются даты утвержденного плана." :
+        plan.stages.length ?
+          "Есть неподтвержденное предложение плана." :
+          "Составьте последовательные этапы."));
       const reason = dates ? field(form, "Причина изменения", "reason", "text", {required: "", minlength: "10", maxlength: "2000"}) : null;
       const list = node("div");
       form.append(list);
       const rows = [];
+      let dateHelp = null;
       let addButton;
       function add(stage = {}) {
         const item = node("fieldset");
@@ -526,6 +547,10 @@
         if (dates) item.append(message(`${stage.position}. ${stage.title} · ${states[stage.status]}`));
         const starts = utcField(item, "Начало (UTC)", stage.starts_at, dates && stage.status === "completed");
         const due = utcField(item, "Срок (UTC)", stage.due_at, dates && stage.status === "completed");
+        if (dateHelp) {
+          associateHelp(starts, dateHelp);
+          associateHelp(due, dateHelp);
+        }
         const row = {stage, title, starts, due, item};
         rows.push(row); list.append(item);
         if (!dates) item.append(button("Удалить этап", () => {
@@ -540,6 +565,12 @@
         addButton = button("Добавить этап", () => { add(); addButton.disabled = rows.length >= 50; }, rows.length >= 50);
         form.append(addButton);
       }
+      const dateControls = rows.flatMap(row => [row.starts, row.due]);
+      if (reason) dateControls.push(reason);
+      dateHelp = help(form, dates ?
+        "Все даты вводятся в UTC. Для completed даты недоступны для изменения. При конфликте expected перечитайте актуальный план и вручную пересмотрите значения; повторной отправки автоматически нет." :
+        "Все даты вводятся в UTC. Предложение можно заменить до утверждения, но отправка не утверждает его.",
+      dateControls);
       return {reason, rows};
     }, inputs => {
       if (!inputs.rows.length) throw new Error("Нужен хотя бы один этап.");
@@ -568,8 +599,10 @@
   }
   async function upload(projectId, stageId) {
     operationForm("Загрузка материала", () => materials(projectId, stageId), form => {
-      form.append(message("TXT (UTF-8), PDF или DOCX; максимум 20 МиБ. При неизвестном результате проверьте историю перед повторением."));
-      return field(form, "Файл материала", "file", "file", {required: "", accept: ".txt,.pdf,.docx"});
+      const input = field(form, "Файл материала", "file", "file", {required: "", accept: ".txt,.pdf,.docx"});
+      help(form, "Допустимы непустые TXT в UTF-8, PDF и DOCX размером до 20 МиБ. Каждая подтвержденная отправка создает новую версию. Если результат сети неизвестен, сначала проверьте историю версий.",
+        [input]);
+      return input;
     }, input => {
       const file = input.files[0];
       if (!file || file.size === 0 || file.size > 20 * 1024 * 1024 || !/\.(txt|pdf|docx)$/i.test(file.name)) {
@@ -589,6 +622,8 @@
       decision.append(node("option", "Вернуть на доработку", {value: "revision"}), node("option", "Принять", {value: "accepted"}));
       label.append(decision); form.append(label);
       const remarks = field(form, "Замечания", "remarks", "text", {maxlength: "10000"});
+      help(form, "Для решения revision обязательны непустые замечания. Если результат отправки неясен, проверьте историю и решение версии до ручного повтора.",
+        [decision, remarks]);
       return {decision, remarks};
     }, inputs => {
       const body = {decision: inputs.decision.value, remarks: inputs.remarks.value.trim()};
@@ -652,7 +687,7 @@
     table(content, "Эффективные разрешения", ["Код"], me.permissions.map(code => [code]));
     content.append(message("Эффективные права других учетных записей доступны уполномоченному администратору в деталях. Роль admin не означает все права."));
   }
-  async function accounts(offset = 0, result = null, q = "", matchesFilter = null) {
+  async function accounts(offset = 0, result = null, q = "", matchesFilter = null, focusSearch = false) {
     let currentOffset = offset;
     let data = await accountCatalogPage(q, currentOffset);
     if (currentOffset > 0 && currentOffset >= data.total) {
@@ -663,12 +698,15 @@
     const catalog = catalogContext(q, currentOffset);
     content.replaceChildren(node("h2", "Учетные записи"),
       message(`Всего: ${data.total}. Страница: ${data.page}. Размер: ${data.limit}.`));
-    const search = node("form");
+    const search = node("form", undefined, {role: "search", "aria-label": "Поиск учетных записей"});
     const query = field(search, "Поиск по email, имени или фамилии", "q", "search", {maxlength: "254"});
     query.value = q;
+    help(search, "Ищет по email, имени и фамилии. Примените поиск кнопкой или Enter. Возврат из детали и связанных форм загружает эту страницу заново с теми же фильтром и смещением. Пустой результат означает, что совпадений нет, а не ошибку.",
+      [query]);
     search.append(node("button", "Найти учетные записи", {type: "submit"}));
-    search.addEventListener("submit", event => { event.preventDefault(); open(() => accounts(0, null, query.value)); });
+    search.addEventListener("submit", event => { event.preventDefault(); open(() => accounts(0, null, query.value, null, true)); });
     content.append(search);
+    if (q.trim() && data.total === 0) content.append(message("По запросу учетные записи не найдены. Это не ошибка."));
     table(content, "Учетные записи", ["ID", "Email", "Имя", "Фамилия", "Отчество", "Группа", "Состояние", "Роли", "Действия"],
       rows.map(row => {
         const actions = node("div", undefined, {class: "actions"});
@@ -692,6 +730,7 @@
     pageForm.addEventListener("submit", event => { event.preventDefault(); open(() => accounts(Number(pageOffset.value), null, q)); });
     content.append(pageForm);
     if (allowed("roles.manage")) content.append(button("Создать учетную запись", () => open(() => accountCreate(catalog))));
+    if (focusSearch) query.focus();
     if (result) {
       const detail = await renderAccountDetail(result.id, false, result, catalog);
       content.prepend(detail);
@@ -853,15 +892,27 @@
     const current = await api(`/admin/users/${id}/roles`);
     const catalog = await api("/admin/roles");
     content.replaceChildren(node("h2", `Роли учетной записи № ${id}`),
-      message("API заменяет весь набор ролей. Подтверждение показывает исходный и новый набор. Нет expected/версии: перечитайте данные перед изменением при конкуренции."),
-      message("Роли и эффективные права перечитываются сервером, не вычисляются в UI."));
+      node("p", "Роль назначает категорию доступа; эффективные разрешения вычисляет backend из ролей. PUT заменяет полный набор, без проверки версии: перед подтверждением сравните актуальные данные. Другие сессии автоматически не обновляются.",
+        {class: "notice"}));
+    const roleActions = [];
     const self = String(me.id) === String(id);
     table(content, "Назначенные роли", ["Код", "Действие"], current.role_codes.map(code => [code,
-      button(`Снять роль ${code}`, () => roleChange(id, current.role_codes, code, false, context), self || current.role_codes.length <= 1)]));
+      (() => {
+        const action = button(`Снять роль ${code}`, () => roleChange(id, current.role_codes, code, false, context),
+          self || current.role_codes.length <= 1);
+        roleActions.push(action);
+        return action;
+      })()]));
     if (self) content.append(message("Изменять собственные роли запрещено сервером."));
     const possible = catalog.filter(role => editableRoles.has(role.code) && !current.role_codes.includes(role.code));
-    possible.forEach(role => content.append(button(`Назначить роль ${role.code}`,
-      () => roleChange(id, current.role_codes, role.code, true, context), self || current.role_codes.length >= 5)));
+    possible.forEach(role => {
+      const action = button(`Назначить роль ${role.code}`,
+        () => roleChange(id, current.role_codes, role.code, true, context), self || current.role_codes.length >= 5);
+      roleActions.push(action);
+      content.append(action);
+    });
+    help(content, "PUT заменяет полный набор без проверки версии; перед подтверждением перечитайте его при возможном параллельном изменении. Другие сессии автоматически не обновляются.",
+      roleActions);
     content.append(message("Нельзя снимать назначенную проектам учебную роль или роль последнего активного администратора; сервер проверяет эти условия."),
       button("Обновить роли", () => open(() => accountRoles(id, context))),
       button(context.view === "detail" ? "К деталям учетной записи" :
@@ -893,12 +944,22 @@
     const catalog = await api("/admin/permissions");
     await refreshIdentity();
     content.replaceChildren(node("h2", `Разрешения роли ${code}`),
-      message("Изменяется весь набор. Политику допустимых разрешений проверяет сервер: admin не получает глобальные учебные права и сохраняет users.manage/roles.manage."),
-      message("Изменение касается всех носителей роли. Выбранная учетная запись и текущая сессия перечитываются явно. Нет expected/версии набора."));
-    table(content, "Разрешения роли", ["Код", "Действие"], current.permission_codes.map(permission => [permission,
-      button(`Снять разрешение ${permission}`, () => permissionChange(code, current.permission_codes, permission, false, accountContext))]));
-    catalog.filter(item => !current.permission_codes.includes(item.code)).forEach(item => content.append(
-      button(`Назначить разрешение ${item.code}`, () => permissionChange(code, current.permission_codes, item.code, true, accountContext))));
+      message("Backend проверяет политику разрешений; роль admin не получает глобальные учебные права и сохраняет users.manage/roles.manage."));
+    const permissionActions = [];
+    table(content, "Разрешения роли", ["Код", "Действие"], current.permission_codes.map(permission => {
+      const action = button(`Снять разрешение ${permission}`,
+        () => permissionChange(code, current.permission_codes, permission, false, accountContext));
+      permissionActions.push(action);
+      return [permission, action];
+    }));
+    catalog.filter(item => !current.permission_codes.includes(item.code)).forEach(item => {
+      const action = button(`Назначить разрешение ${item.code}`,
+        () => permissionChange(code, current.permission_codes, item.code, true, accountContext));
+      permissionActions.push(action);
+      content.append(action);
+    });
+    help(content, "Изменение разрешений влияет на всех пользователей роли. PUT заменяет полный набор без проверки версии; перед подтверждением перечитайте его при возможном параллельном изменении. Другие сессии автоматически не обновляются.",
+      permissionActions);
     content.append(button("Обновить разрешения роли", () => open(() => rolePermissions(code, accountContext))),
       button("Мои эффективные права", () => open(() => effectivePermissions())));
     if (accountContext && accountContext.view === "detail") {
