@@ -1,0 +1,51 @@
+Interval: a33d21d1a80b6ce959e286e993d49da99e6a5d28..24946dd8873615ab01a86bde9eed839f0307b98f
+Maximum distinct non-merge commits: 5
+Tied paths: app/ui/app.js
+Selected: app/ui/app.js (lexicographically first if tied)
+
+$ git log --full-history --no-merges --topo-order "--format=%H%nParents: %P%nAuthor: %an%nAuthor date: %aI%nCommit date: %cI%nSubject: %s" --stat -M a33d21d1a80b6ce959e286e993d49da99e6a5d28..24946dd8873615ab01a86bde9eed839f0307b98f -- app/ui/app.js
+bedb7ec93614547f644fcc9585d60ab80b4b07ad
+Parents: cfb1f0423e8959a2d232f427f0aa355811947eec
+Author: Lab6 Simulated Developer B
+Author date: 2026-11-02T21:54:36+03:00
+Commit date: 2026-11-02T21:54:36+03:00
+Subject: Clarify literal characters in catalog search help
+
+ app/ui/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+a82816f5c238ecc916f82f043c11874c4a718b8e
+Parents: cfb1f0423e8959a2d232f427f0aa355811947eec
+Author: Lab6 Simulated Developer A
+Author date: 2026-11-02T21:54:00+03:00
+Commit date: 2026-11-02T21:54:00+03:00
+Subject: Clarify case-insensitive catalog search help
+
+ app/ui/app.js | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+ee7816bed74fe73dde1f0b71b0c4e0d107ccebad
+Parents: 4ebc1277819996a76f5e66e2b2aaa5723eee3e82
+Author: JoanTarazona99
+Author date: 2026-11-02T09:14:26+03:00
+Commit date: 2026-11-02T09:14:26+03:00
+Subject: Protect unsaved UI drafts on navigation
+
+ app/ui/app.js | 227 ++++++++++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 212 insertions(+), 15 deletions(-)
+387d661993e98203e861de52e1978fa94eba01f1
+Parents: 42ffbf5d453d57d3b05afacad9cd2cc1f57bd350
+Author: JoanTarazona99
+Author date: 2026-11-02T08:00:14+03:00
+Commit date: 2026-11-02T08:00:14+03:00
+Subject: Add contextual UI help and basic accessibility
+
+ app/ui/app.js | 99 +++++++++++++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 80 insertions(+), 19 deletions(-)
+0ed2111e23e85c3e6aaf6e4f55d6392d4a299a1b
+Parents: a33d21d1a80b6ce959e286e993d49da99e6a5d28
+Author: JoanTarazona99
+Author date: 2026-11-02T06:18:43+03:00
+Commit date: 2026-11-02T06:18:43+03:00
+Subject: Improve administrative account navigation context
+
+ app/ui/app.js | 189 ++++++++++++++++++++++++++++++++++++++++------------------
+ 1 file changed, 132 insertions(+), 57 deletions(-)

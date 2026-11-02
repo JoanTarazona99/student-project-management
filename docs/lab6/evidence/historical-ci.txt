@@ -1,0 +1,61 @@
+Historical CI queried for this documentation task; these are not new test executions.
+Repository: JoanTarazona99/student-project-management
+Workflow: Backend tests
+All four queried runs: status=completed, conclusion=success, event=pull_request.
+Private emails, credentials and full logs are intentionally omitted.
+
+PR #13
+headSha: 0ed2111e23e85c3e6aaf6e4f55d6392d4a299a1b
+Actual checkout refs/remotes/pull/13/merge:
+2026-11-02T03:19:17.1699360Z [command]/usr/bin/git log -1 --format=%H
+2026-11-02T03:19:17.1723803Z f2d31fe9579c064397ec65e548abb7f5a4fc8a77
+run: https://github.com/JoanTarazona99/student-project-management/actions/runs/41382436485
+Log excerpts:
+2026-11-02T03:19:52.8044497Z Ran 14 tests in 0.015s
+2026-11-02T03:27:30.4793883Z ================== 259 passed, 1 warning in 456.13s (0:07:36) ==================
+
+PR #14
+headSha: 387d661993e98203e861de52e1978fa94eba01f1
+Actual checkout refs/remotes/pull/14/merge:
+2026-11-02T05:00:42.3193733Z [command]/usr/bin/git log -1 --format=%H
+2026-11-02T05:00:42.3212919Z f8302c57d762a4682c76097cd7f0a53a83868da1
+run: https://github.com/JoanTarazona99/student-project-management/actions/runs/41391535030
+Log excerpts:
+2026-11-02T05:01:13.0002103Z Ran 14 tests in 0.005s
+2026-11-02T05:07:30.9397979Z ================== 266 passed, 1 warning in 377.04s (0:06:17) ==================
+
+PR #15
+headSha: ee7816bed74fe73dde1f0b71b0c4e0d107ccebad
+Actual checkout refs/remotes/pull/15/merge:
+2026-11-02T06:14:52.8730844Z [command]/usr/bin/git log -1 --format=%H
+2026-11-02T06:14:52.8755646Z 83d73564f0e21f6b9cc85b6879a2d5a6f837245b
+run: https://github.com/JoanTarazona99/student-project-management/actions/runs/41398696439
+Log excerpts:
+2026-11-02T06:15:48.7153980Z Ran 14 tests in 0.016s
+2026-11-02T06:24:24.4333206Z ================== 278 passed, 1 warning in 514.24s (0:08:34) ==================
+
+PR #16 (complementary simulation, not iteration 4)
+headSha: 66879b0ab34e2bf1d705d3bc806e319446303d1f
+Actual checkout refs/remotes/pull/16/merge:
+2026-11-02T19:21:31.2906031Z [command]/usr/bin/git log -1 --format=%H
+2026-11-02T19:21:31.2926193Z 2be9db7f2c17a5c06e80fe2952ec0c61ff2b080c
+run: https://github.com/JoanTarazona99/student-project-management/actions/runs/41509171794
+Log excerpts:
+2026-11-02T19:22:18.7716532Z Ran 14 tests in 0.013s
+2026-11-02T19:29:49.1778485Z ================== 282 passed, 1 warning in 449.05s (0:07:29) ==================
+
+Queries actually used:
+gh run list --branch maintenance/v1.0 --limit 5 --json databaseId,headSha,status,conclusion,url,name,event
+gh run list --branch maintenance/v2.0 --limit 5 --json databaseId,headSha,status,conclusion,url,name,event
+gh run list --branch maintenance/v3.0 --limit 5 --json databaseId,headSha,status,conclusion,url,name,event
+gh run list --branch lab6/team-sim-integration --limit 5 --json databaseId,headSha,status,conclusion,url,name,event
+foreach ($id in 41382436485,41391535030,41398696439,41509171794) {
+    gh run view $id --log | Select-String -Pattern 'Ran 14 tests|\d+ passed.*warning'
+}
+foreach ($id in 41382436485,41391535030,41398696439,41509171794) {
+    gh run view $id --log | Select-String -Pattern 'git log -1 --format|Checking out the ref|refs/remotes/pull|refs/pull/\d+/merge' -Context 0,2
+}
+
+The retained excerpts remove runner/step prefixes only; test counts and timestamps
+are taken from actual log output. No claim is made here that the merge SHA was
+the tested headSha, or that reverse-order execution ran in this CI workflow.

@@ -1,0 +1,14 @@
+BASE: a33d21d1a80b6ce959e286e993d49da99e6a5d28
+FINAL: 24946dd8873615ab01a86bde9eed839f0307b98f
+All reachable commits in interval: 12
+Non-merge commits: 6
+Merge commits: 6
+Distinct commit/file pairs: 27
+Distinct paths: 14
+Selected path: app/ui/app.js
+Maximum count: 5
+Ties: ['app/ui/app.js']
+Three-iteration FINAL: cfb1f0423e8959a2d232f427f0aa355811947eec
+Three-iteration non-merge commits: 3
+Three-iteration ranking: [('README_tests_RU.md', 3), ('README_web_ui_RU.md', 3), ('app/ui/app.js', 3), ('app/ui/style.css', 2), ('docs/lab6/iteration-1.md', 2), ('tests/test_admin_catalog_navigation_browser.py', 2), ('app/ui/index.html', 1), ('docs/lab6/iteration-2.md', 1), ('docs/lab6/iteration-3.md', 1), ('tests/test_ui_contextual_help_browser.py', 1), ('tests/test_ui_unsaved_changes_browser.py', 1)]
+Verified explicit parent lists: 12
