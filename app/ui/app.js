@@ -898,7 +898,7 @@
     const search = node("form", undefined, {role: "search", "aria-label": "Поиск учетных записей"});
     const query = field(search, "Поиск по email, имени или фамилии", "q", "search", {maxlength: "254"});
     query.value = q;
-    help(search, "Ищет по email, имени и фамилии. Примените поиск кнопкой или Enter. Возврат из детали и связанных форм загружает эту страницу заново с теми же фильтром и смещением. Пустой результат означает, что совпадений нет, а не ошибку.",
+    help(search, "Ищет по email, имени и фамилии. Поиск не учитывает регистр. Примените поиск кнопкой или Enter. Возврат из детали и связанных форм загружает эту страницу заново с теми же фильтром и смещением. Пустой результат означает, что совпадений нет, а не ошибку.",
       [query]);
     search.append(node("button", "Найти учетные записи", {type: "submit"}));
     search.addEventListener("submit", event => { event.preventDefault(); open(() => accounts(0, null, query.value, null, true)); });
