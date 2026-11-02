@@ -10,6 +10,141 @@
   let generation = 0;
   let helpSequence = 0;
   let controller = new AbortController();
+  let activeDraft = null;
+  let navigationDecision = null;
+  let draftSequence = 0;
+  let beforeUnloadAttached = false;
+
+  function beforeUnload(event) {
+    if (!activeDraft || !draftNeedsWarning(activeDraft)) return;
+    event.preventDefault();
+    event.returnValue = "";
+  }
+
+  function updateBeforeUnload() {
+    const needed = Boolean(activeDraft && draftNeedsWarning(activeDraft));
+    if (needed && !beforeUnloadAttached) {
+      window.addEventListener("beforeunload", beforeUnload);
+      beforeUnloadAttached = true;
+    } else if (!needed && beforeUnloadAttached) {
+      window.removeEventListener("beforeunload", beforeUnload);
+      beforeUnloadAttached = false;
+    }
+  }
+
+  function draftSnapshot(form) {
+    return JSON.stringify([...form.elements].filter(control =>
+      control.matches("input, textarea, select")).map(control => {
+      const type = control.type || control.tagName.toLowerCase();
+      let value;
+      if (type === "password") value = control.value.length > 0;
+      else if (type === "file") value = control.files.length > 0;
+      else if (type === "checkbox" || type === "radio") value = control.checked;
+      else if (control instanceof HTMLSelectElement && control.multiple) {
+        value = [...control.selectedOptions].map(option => option.value);
+      } else value = control.value;
+      return [type, control.name, control.id, value];
+    }));
+  }
+
+  function draftNeedsWarning(draft) {
+    return draft.phase === "prepared" || draft.phase === "submitting" ||
+      draft.phase === "uncertain" || draftSnapshot(draft.form) !== draft.baseline;
+  }
+
+  function clearSensitiveFormData(form) {
+    if (!form) return;
+    form.querySelectorAll('input[type="password"], input[type="file"]').forEach(input => {
+      input.value = "";
+    });
+  }
+
+  function releasePrepared(draft) {
+    if (draft.prepared?.dispose) draft.prepared.dispose();
+    draft.prepared = null;
+  }
+
+  function clearDraft(draft = activeDraft) {
+    if (!draft) return;
+    releasePrepared(draft);
+    clearSensitiveFormData(draft.form);
+    draft.observer.disconnect();
+    if (activeDraft === draft) activeDraft = null;
+    draft.form = null;
+    draft.baseline = null;
+    updateBeforeUnload();
+  }
+
+  function closeNavigationDecision(restoreFocus = true) {
+    if (!navigationDecision) return null;
+    const decision = navigationDecision;
+    navigationDecision = null;
+    decision.dialog.remove();
+    content.inert = decision.inert.content;
+    identity.inert = decision.inert.identity;
+    navigation.inert = decision.inert.navigation;
+    if (restoreFocus && decision.focusTarget?.isConnected && !decision.focusTarget.disabled) {
+      decision.focusTarget.focus();
+    }
+    return decision;
+  }
+
+  function requestNavigation(view, confirmed = "") {
+    if (navigationDecision) return;
+    const draft = activeDraft;
+    const inFlight = draft.phase === "submitting";
+    const uncertain = draft.phase === "uncertain";
+    const titleId = `ui-discard-title-${++draftSequence}`;
+    const descriptionId = `ui-discard-description-${draftSequence}`;
+    const dialog = node("div", undefined, {class: "discard-overlay"});
+    const panel = node("section", undefined, {
+      class: "discard-dialog",
+      role: "alertdialog",
+      "aria-modal": "true",
+      "aria-labelledby": titleId,
+      "aria-describedby": descriptionId
+    });
+    const title = node("h2", "Покинуть форму?", {id: titleId});
+    const description = node("p", inFlight ?
+      "Отправка уже началась. Запрос может завершиться на сервере; уход не отменяет и не откатывает операцию. Не отправляйте ее повторно, сначала проверьте актуальные данные." :
+      uncertain ?
+        "Результат отправки неизвестен. Сначала проверьте актуальные данные; прежняя операция не будет отправлена повторно." :
+        draft.phase === "prepared" ?
+          "Подтверждение подготовлено, но еще не отправлено. При уходе оно будет удалено." :
+          "Изменения формы будут удалены. Они не отправлялись на сервер.", {id: descriptionId});
+    const stay = button("Остаться", () => closeNavigationDecision());
+    const leave = button("Покинуть форму без сохранения", () => {
+      const pending = closeNavigationDecision(false);
+      clearDraft(draft);
+      performOpen(pending.view, pending.confirmed);
+    });
+    panel.append(title, description, stay, leave);
+    dialog.append(panel);
+    document.body.append(dialog);
+    navigationDecision = {
+      dialog, view, confirmed,
+      focusTarget: document.activeElement,
+      inert: {content: content.inert, identity: identity.inert, navigation: navigation.inert}
+    };
+    content.inert = identity.inert = navigation.inert = true;
+    panel.addEventListener("keydown", event => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeNavigationDecision();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = [...panel.querySelectorAll("button:not(:disabled)")];
+      if (event.shiftKey && document.activeElement === controls[0]) {
+        event.preventDefault();
+        controls.at(-1).focus();
+      } else if (!event.shiftKey && document.activeElement === controls.at(-1)) {
+        event.preventDefault();
+        controls[0].focus();
+      }
+    });
+    stay.focus();
+  }
 
   function node(tag, text, attributes = {}) {
     const result = document.createElement(tag);
@@ -46,7 +181,13 @@
     generation += 1;
     return generation;
   }
-  function logout(explanation = "Вы вышли. Токен удален из памяти страницы.") {
+  function logout(explanation = "Вы вышли. Токен удален из памяти страницы.", requestRejected = false) {
+    const requestMayFinish = activeDraft?.phase === "submitting";
+    closeNavigationDecision(false);
+    clearDraft();
+    if (requestMayFinish && !requestRejected) {
+      explanation += " Отправленная операция может завершиться на сервере; выход не отменяет ее.";
+    }
     invalidate();
     token = me = null;
     identity.replaceChildren();
@@ -87,7 +228,7 @@
     }
     if (captured !== generation) throw new DOMException("Отменено", "AbortError");
     if (response.status === 401) {
-      logout(token ? "Сессия истекла или доступ отозван. Войдите снова." : "Неверный email или пароль.");
+      logout(token ? "Сессия истекла или доступ отозван. Войдите снова." : "Неверный email или пароль.", true);
       throw new DOMException("Отменено", "AbortError");
     }
     if (response.status === 403) {
@@ -96,23 +237,34 @@
         me = await api("/auth/me");
         nav();
       }
-      throw new Error("Недостаточно прав. Доступ к разделу запрещен.");
+      throw Object.assign(new Error("Недостаточно прав. Доступ к разделу запрещен."), {status: 403});
     }
-    if (response.status === 404) throw new Error("Ресурс не найден или недоступен.");
+    if (response.status === 404) throw Object.assign(new Error("Ресурс не найден или недоступен."), {status: 404});
     if (response.status === 409) throw Object.assign(new Error("Конфликт данных. Обновите страницу раздела."), {status: 409});
     if (response.status === 422) throw Object.assign(new Error("Некорректные параметры. Проверьте значения фильтров."), {status: 422});
-    if (!response.ok) throw new Error("Сервис временно недоступен. Повторите запрос позже.");
+    if (!response.ok) {
+      throw Object.assign(new Error("Сервис временно недоступен. Повторите запрос позже."), {status: response.status});
+    }
     let value;
     try {
       value = options.blob ? await response.blob() : await response.json();
     } catch (error) {
       if (captured !== generation || error.name === "AbortError") throw new DOMException("Отменено", "AbortError");
-      throw new Error("Не удалось прочитать ответ сервера. Повторите запрос.");
+      throw Object.assign(new Error("Не удалось прочитать ответ сервера. Повторите запрос."), {status: response.status});
     }
     if (captured !== generation) throw new DOMException("Отменено", "AbortError");
     return value;
   }
   async function open(view, confirmed = "") {
+    if (navigationDecision) return;
+    if (activeDraft && draftNeedsWarning(activeDraft)) {
+      requestNavigation(view, confirmed);
+      return;
+    }
+    if (activeDraft) clearDraft();
+    await performOpen(view, confirmed);
+  }
+  async function performOpen(view, confirmed = "") {
     const captured = invalidate();
     content.replaceChildren(message("Загрузка…"));
     try {
@@ -388,9 +540,13 @@
     if (input.value === input.dataset.originalValue && input.dataset.originalTimestamp) return input.dataset.originalTimestamp;
     return `${input.value}${input.value.length === 16 ? ":00" : ""}Z`;
   }
-  async function send(trigger, feedback, operation, refresh, success = "Операция подтверждена сервером.", rejected = () => {}) {
+  async function send(trigger, feedback, operation, refresh, success = "Операция подтверждена сервером.", rejected = () => {}, draft = null) {
     if (trigger.disabled) return;
     trigger.disabled = true;
+    if (draft) {
+      draft.phase = "submitting";
+      updateBeforeUnload();
+    }
     const captured = generation;
     feedback.replaceChildren(message("Отправка…"));
     let result;
@@ -398,17 +554,37 @@
       result = await operation();
     } catch (error) {
       if (captured !== generation || error.name === "AbortError") return;
+      closeNavigationDecision(false);
+      const rejectedByServer = Number.isInteger(error.status) && error.status >= 400 && error.status < 500;
+      if (draft) {
+        releasePrepared(draft);
+        clearSensitiveFormData(draft.form);
+        if (rejectedByServer) {
+          draft.phase = "rejected";
+          trigger.disabled = false;
+          rejected();
+        } else draft.phase = "uncertain";
+        updateBeforeUnload();
+      } else {
+        trigger.disabled = false;
+        rejected();
+      }
       const info = message(error.status === 409 ?
-        "Конфликт: операция отклонена сервером. Черновик сохранен; проверьте ограничения и актуальные данные перед новым подтверждением." :
+        "Конфликт: операция отклонена сервером. Черновик сохранен для редактирования; пароль и выбранный файл очищены, если они были. Проверьте ограничения и актуальные данные перед новым подтверждением." :
         error.status === 422 ? "Некорректные параметры. Проверьте поля формы." :
-        `${error.message} Если результат неизвестен, проверьте данные перед повторным отправлением.`, true);
-      feedback.replaceChildren(info, button("Проверить актуальные данные", () => open(refresh)));
-      trigger.disabled = false;
-      rejected();
+        rejectedByServer ?
+          `${error.message} Операция отклонена сервером. Проверьте актуальные данные и форму перед новым подтверждением.` :
+          `${error.message} Возможно, результат неизвестен. Сначала проверьте данные; прежняя операция не будет отправлена повторно.`, true);
+      feedback.replaceChildren(info, button("Проверить актуальные данные", () => {
+        if (draft) clearDraft(draft);
+        open(refresh);
+      }));
       focus(info);
       return;
     }
     if (captured !== generation) return;
+    closeNavigationDecision(false);
+    if (draft) clearDraft(draft);
     await open(async () => {
       await refresh(result);
       const info = message(typeof success === "function" ? success(result) : success);
@@ -417,30 +593,50 @@
     }, "Операция уже подтверждена. Не отправляйте ее повторно. Не удалось обновить данные: ");
   }
   function operationForm(title, back, build, prepare, refresh, success) {
+    if (activeDraft) clearDraft();
     const form = node("form");
     const feedback = node("div", undefined, {"aria-live": "polite"});
     content.replaceChildren(node("h2", title), form);
     const controls = build(form);
+    const draft = {form, phase: "editing", baseline: draftSnapshot(form), prepared: null, observer: null};
+    draft.observer = new MutationObserver(() => {
+      if (draft.phase === "editing") updateBeforeUnload();
+    });
+    draft.observer.observe(form, {childList: true, subtree: true});
+    activeDraft = draft;
     const submit = node("button", "Проверить и подтвердить", {type: "submit"});
     form.append(submit, button("Вернуться без отправки", () => open(back)), feedback);
+    form.addEventListener("input", updateBeforeUnload);
+    form.addEventListener("change", updateBeforeUnload);
     form.addEventListener("submit", event => {
       event.preventDefault();
-      if (submit.disabled) return;
+      if (submit.disabled || !["editing", "rejected"].includes(draft.phase)) return;
       let prepared;
       try { prepared = prepare(controls); }
       catch (error) {
         const info = message(error.message, true); feedback.replaceChildren(info); focus(info); return;
       }
+      draft.prepared = prepared;
+      draft.phase = "prepared";
+      updateBeforeUnload();
       const enabled = [...form.querySelectorAll("input, textarea, select, button")].filter(item => !item.disabled);
       enabled.forEach(item => { item.disabled = true; });
       const unlock = () => { enabled.forEach(item => { item.disabled = false; }); };
       const summary = node("section", undefined, {"aria-label": "Подтверждение"});
       const confirm = button("Подтвердить отправку", () => {
+        if (draft.phase !== "prepared") return;
         summary.querySelectorAll("button").forEach(item => { if (item !== confirm) item.disabled = true; });
-        send(confirm, feedback, prepared.execute, refresh, success, unlock);
+        send(confirm, feedback, prepared.execute, refresh, success, unlock, draft);
       });
       summary.append(node("h3", "Подтверждение"), node("pre", prepared.summary), confirm,
-        button("Отмена", () => { if (prepared.dispose) prepared.dispose(); feedback.replaceChildren(); unlock(); submit.focus(); }));
+        button("Отмена", () => {
+          releasePrepared(draft);
+          feedback.replaceChildren();
+          unlock();
+          draft.phase = "editing";
+          updateBeforeUnload();
+          submit.focus();
+        }));
       feedback.replaceChildren(summary); confirm.focus();
     });
     const first = form.querySelector("input, textarea, select");
@@ -610,6 +806,7 @@
       }
       const body = new FormData(); body.append("file", file);
       return {summary: `Загрузить ${file.name}, ${file.size} байт в этап № ${stageId}`,
+        dispose: () => body.delete("file"),
         execute: async () => { const result = await api(`/stages/${stageId}/materials`, {method: "POST", body}); input.value = ""; return result; }};
     }, () => materials(projectId, stageId), result => `Версия ${result.version_no} подтверждена. Проверьте историю и состояние проекта.`);
   }

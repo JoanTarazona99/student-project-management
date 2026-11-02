@@ -26,6 +26,10 @@ th { background: #e5edf3; }
 td { min-width: 110px; max-width: 350px; white-space: pre-wrap; }
 .notice { padding: 1rem; border-left: 4px solid #25627c; background: white; white-space: pre-wrap; }
 .help { margin: .25rem 0 .75rem; color: #34495a; font-size: .95rem; }
+.discard-overlay { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 1rem; background: rgb(15 29 42 / 72%); }
+.discard-dialog { width: min(100%, 36rem); padding: 1.25rem; border: 2px solid #155675; border-radius: .4rem; background: #fff; box-shadow: 0 1rem 3rem rgb(0 0 0 / 35%); }
+.discard-dialog h2 { margin-top: 0; }
+.discard-dialog button { margin: .5rem .5rem 0 0; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 1rem; background: white; }
 fieldset { min-width: 0; margin: 1rem 0; border: 1px solid #687989; }
 .error { border-color: #a52a21; color: #8c211a; }
